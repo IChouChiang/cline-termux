@@ -55,6 +55,12 @@ ssh termux 'cd ~ && tar xzf cline-termux-aarch64-v<VERSION>.tar.gz && cd cline-t
 ssh termux 'cline --version && cline --help >/dev/null'
 ```
 
+For a second-device smoke test on another Termux install, copy the tarball and run:
+
+```bash
+bash release/test-termux-install.sh --from-tarball ~/cline-termux-aarch64-v<VERSION>.tar.gz
+```
+
 ## Publish
 
 ```bash
