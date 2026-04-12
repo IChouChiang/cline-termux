@@ -16,6 +16,7 @@
 	"os": [
 		"darwin",
 		"linux",
+		"android",
 		"win32"
 	],
 	"cpu": [
@@ -32,6 +33,7 @@
 		"package": "npm pack --pack-destination ./dist",
 		"build": "npm run typecheck && npx tsx esbuild.mts && npm run build:types",
 		"build:production": "npm run typecheck && npx tsx esbuild.mts --production && npm run build:types",
+		"build:termux": "TERMUX_MAX_OLD_SPACE_SIZE=${TERMUX_MAX_OLD_SPACE_SIZE:-2048} NODE_OPTIONS=--max-old-space-size=$TERMUX_MAX_OLD_SPACE_SIZE npm run build",
 		"build:types": "(npx tsc -p tsconfig.lib.json || true) && cp dist/types/cli/src/exports.d.ts dist/lib.d.ts && mkdir -p dist/agent && cp dist/types/cli/src/agent/ClineAgent.d.ts dist/types/cli/src/agent/ClineSessionEmitter.d.ts dist/types/cli/src/agent/public-types.d.ts dist/agent/ && rm -rf dist/types",
 		"watch": "npx tsx esbuild.mts --watch",
 		"dev": "IS_DEV=true && npm run link && npm run watch ; npm run unlink",
