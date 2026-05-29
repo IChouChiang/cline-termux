@@ -1,0 +1,181 @@
+name: Watch upstream Cline releases
+
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch-upstream:
+    name: Check official Cline versions
+    runs-on: ubuntu-latest
+    if: github.repository != 'cline/cline'
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+
+      - name: Open upstream update issue when needed
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs")
+
+            const upstream = { owner: "cline", repo: "cline" }
+            const labels = [
+              { name: "upstream-update", color: "1d76db", description: "Tracks official upstream Cline releases" },
+              { name: "maintenance", color: "fbca04", description: "Repository maintenance task" },
+              { name: "cline-sync", color: "5319e7", description: "Downstream Cline sync task" },
+            ]
+
+            function parseVersion(value) {
+              const match = String(value || "").match(/(\d+)\.(\d+)\.(\d+)/)
+              return match ? match.slice(1).map(Number) : [0, 0, 0]
+            }
+
+            function compareVersionDesc(left, right) {
+              const a = parseVersion(left)
+              const b = parseVersion(right)
+              for (let index = 0; index < 3; index += 1) {
+                if (a[index] !== b[index]) {
+                  return b[index] - a[index]
+                }
+              }
+              return 0
+            }
+
+            function readLocalVersion(paths) {
+              for (const path of paths) {
+                if (fs.existsSync(path)) {
+                  return JSON.parse(fs.readFileSync(path, "utf8")).version
+                }
+              }
+              return null
+            }
+
+            async function readUpstreamVersion(paths) {
+              for (const path of paths) {
+                try {
+                  const response = await github.rest.repos.getContent({
+                    ...upstream,
+                    path,
+                    ref: "main",
+                  })
+                  if (!Array.isArray(response.data) && response.data.content) {
+                    const content = Buffer.from(response.data.content, "base64").toString("utf8")
+                    return { path, version: JSON.parse(content).version }
+                  }
+                } catch (error) {
+                  if (error.status !== 404) {
+                    throw error
+                  }
+                }
+              }
+              return { path: null, version: null }
+            }
+
+            async function latestTagMatching(pattern) {
+              const tags = await github.paginate(github.rest.repos.listTags, {
+                ...upstream,
+                per_page: 100,
+              })
+              return tags
+                .map((tag) => tag.name)
+                .filter((name) => pattern.test(name))
+                .sort(compareVersionDesc)[0] || null
+            }
+
+            async function ensureLabel(label) {
+              try {
+                await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: label.name,
+                })
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error
+                }
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ...label,
+                })
+              }
+            }
+
+            const currentAppVersion = readLocalVersion(["package.json", "apps/vscode/package.json"])
+            const currentCliVersion = readLocalVersion(["cli/package.json", "sdk/apps/cli/package.json"])
+            const upstreamApp = await readUpstreamVersion(["apps/vscode/package.json", "package.json"])
+            const upstreamCli = await readUpstreamVersion(["sdk/apps/cli/package.json", "cli/package.json"])
+            const latestAppTag = await latestTagMatching(/^v\d+\.\d+\.\d+$/)
+            const latestCliTag = await latestTagMatching(/^cli-v\d+\.\d+\.\d+$/)
+
+            const appChanged = upstreamApp.version && upstreamApp.version !== currentAppVersion
+            const cliChanged = upstreamCli.version && upstreamCli.version !== currentCliVersion
+
+            core.summary.addRaw("## Upstream Cline watch\n\n")
+            core.summary.addRaw(`- Current app version: ${currentAppVersion || "unknown"}\n`)
+            core.summary.addRaw(`- Upstream app version: ${upstreamApp.version || "unknown"} (${upstreamApp.path || "not found"})\n`)
+            core.summary.addRaw(`- Latest app tag: ${latestAppTag || "not found"}\n`)
+            core.summary.addRaw(`- Current CLI version: ${currentCliVersion || "unknown"}\n`)
+            core.summary.addRaw(`- Upstream CLI version: ${upstreamCli.version || "unknown"} (${upstreamCli.path || "not found"})\n`)
+            core.summary.addRaw(`- Latest CLI tag: ${latestCliTag || "not found"}\n`)
+
+            if (!appChanged && !cliChanged) {
+              core.info("No upstream version drift detected.")
+              return
+            }
+
+            const trackingKey = `cline-upstream:${upstreamApp.version || latestAppTag || "unknown-app"}:${upstreamCli.version || latestCliTag || "unknown-cli"}`
+            const search = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:issue "${trackingKey}"`,
+              per_page: 1,
+            })
+
+            if (search.data.total_count > 0) {
+              core.info(`Issue already exists for ${trackingKey}.`)
+              return
+            }
+
+            for (const label of labels) {
+              await ensureLabel(label)
+            }
+
+            const title = `Upstream Cline update available: app ${upstreamApp.version || latestAppTag || "unknown"}, CLI ${upstreamCli.version || latestCliTag || "unknown"}`
+            const body = [
+              "Official Cline has moved ahead of this Termux downstream fork.",
+              "",
+              "## Detected versions",
+              `- Current fork app version: ${currentAppVersion || "unknown"}`,
+              `- Upstream app version: ${upstreamApp.version || "unknown"}`,
+              `- Latest upstream app tag: ${latestAppTag || "unknown"}`,
+              `- Current fork CLI version: ${currentCliVersion || "unknown"}`,
+              `- Upstream CLI version: ${upstreamCli.version || "unknown"}`,
+              `- Latest upstream CLI tag: ${latestCliTag || "unknown"}`,
+              "",
+              "## Suggested sync checklist",
+              "- [ ] Read upstream changelog/release notes for user-facing changes.",
+              "- [ ] Inspect upstream layout changes, especially `apps/vscode`, `sdk/apps/cli`, and SDK packages.",
+              "- [ ] Create a short-lived sync branch such as `sync/upstream-vX`.",
+              "- [ ] Port Termux-specific CLI, local-provider, bridge, and Android embedding changes.",
+              "- [ ] Build `dist/cli.mjs` and `dist/lib.mjs`.",
+              "- [ ] Deploy to a canary Termux folder before switching `~/.cline-termux/current`.",
+              "- [ ] Run direct Termux CLI smoke tests and Android bridge smoke tests.",
+              "- [ ] Update README / release notes with any new setup or compatibility details.",
+              "",
+              `Tracking key: \`${trackingKey}\``,
+            ].join("\n")
+
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: labels.map((label) => label.name),
+            })
+
+            core.info(`Opened ${issue.data.html_url}`)
