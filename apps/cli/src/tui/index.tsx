@@ -3,6 +3,7 @@ import { createRoot } from "@opentui/react";
 import { Root } from "./root";
 import { installTuiStdioCapture } from "./stdio-capture";
 import type { TuiProps } from "./types";
+import { getTermuxRendererOptions } from "./utils/termux-renderer-options";
 
 export type { TuiProps } from "./types";
 
@@ -13,6 +14,7 @@ export async function renderOpenTui(
 		exitOnCtrlC: false,
 		autoFocus: false,
 		enableMouseMovement: true,
+		...getTermuxRendererOptions(),
 	});
 	const restoreStdio = installTuiStdioCapture();
 
