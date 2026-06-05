@@ -3,6 +3,7 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import React from "react";
 import { deleteSession } from "../session/session";
+import { getTermuxRendererOptions } from "./utils/termux-renderer-options";
 import { HistoryStandaloneContent } from "./views/history-view";
 
 export async function renderHistoryStandalone(input: {
@@ -14,6 +15,7 @@ export async function renderHistoryStandalone(input: {
 		exitOnCtrlC: true,
 		autoFocus: false,
 		enableMouseMovement: true,
+		...getTermuxRendererOptions(),
 	});
 
 	return new Promise((resolve) => {

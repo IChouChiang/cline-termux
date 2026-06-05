@@ -57,6 +57,7 @@ import { hydrateSessionMessages } from "./utils/hydrate-messages";
 import { isProviderConfigured } from "./utils/provider-configured";
 import { createSelectionCopyHandler } from "./utils/selection-copy";
 import type { LocalSlashCommandInvocation } from "./utils/skill-command-input";
+import { getTermuxDialogSafeAreaOptions } from "./utils/termux-dialog-safe-area";
 import { deriveTerminalTitle } from "./utils/terminal-title";
 import { ChatView } from "./views/chat-view";
 import { HomeView } from "./views/home-view";
@@ -968,9 +969,13 @@ export function Root(
 		}),
 		[props.terminalBackground, props.terminalForeground],
 	);
+	const dialogSafeAreaOptions = useMemo(
+		() => getTermuxDialogSafeAreaOptions(),
+		[],
+	);
 	return (
 		<TerminalColorsContext value={terminalColors}>
-			<DialogProvider size="medium">
+			<DialogProvider size="medium" {...dialogSafeAreaOptions}>
 				<SessionProvider
 					config={props.config}
 					initialEntries={initialEntries}

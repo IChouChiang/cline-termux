@@ -13,6 +13,7 @@ import { Command } from "commander";
 import open from "open";
 import React from "react";
 import { disableOpenTuiGraphicsProbe } from "../tui/opentui-env";
+import { getTermuxRendererOptions } from "../tui/utils/termux-renderer-options";
 import {
 	getPersistedProviderApiKey,
 	isOAuthProvider,
@@ -336,6 +337,7 @@ async function runInteractiveAuthTui(input: AuthCommandInput): Promise<number> {
 		exitOnCtrlC: false,
 		autoFocus: false,
 		enableMouseMovement: true,
+		...getTermuxRendererOptions(),
 	});
 
 	return await new Promise<number>((resolve, reject) => {

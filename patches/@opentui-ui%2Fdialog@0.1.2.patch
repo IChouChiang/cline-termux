@@ -1,0 +1,132 @@
+diff --git a/dist/dialog-container-Btgzkwy7.mjs b/dist/dialog-container-Btgzkwy7.mjs
+index fa1f29023479d5df2daf399c42f1d492365365aa..35e67cb8975bc70bf8cc1e896b7f2c8591d4f88d 100644
+--- a/dist/dialog-container-Btgzkwy7.mjs
++++ b/dist/dialog-container-Btgzkwy7.mjs
+@@ -510,6 +510,11 @@ function getDialogWidth(size, containerOptions, terminalWidth) {
+ 	if (defaultWidth === -1) return terminalWidth ? terminalWidth - FULL_SIZE_OFFSET : 80;
+ 	return defaultWidth;
+ }
++function getDialogVerticalAlign(value) {
++	if (value === "start") return "flex-start";
++	if (value === "end") return "flex-end";
++	return "center";
++}
+ 
+ //#endregion
+ //#region src/renderables/dialog.ts
+@@ -611,7 +616,9 @@ var DialogContainerRenderable = class extends BoxRenderable {
+ 			height: ctx.height,
+ 			zIndex: DIALOG_Z_INDEX,
+ 			alignItems: "center",
+-			justifyContent: "center",
++			justifyContent: getDialogVerticalAlign(options.verticalAlign),
++			paddingTop: options.safeAreaTop ?? 0,
++			paddingBottom: options.safeAreaBottom ?? 0,
+ 			backgroundColor: "transparent",
+ 			visible: false
+ 		});
+@@ -706,6 +713,18 @@ var DialogContainerRenderable = class extends BoxRenderable {
+ 	set closeOnClickOutside(value) {
+ 		this._options.closeOnClickOutside = value;
+ 	}
++	set verticalAlign(value) {
++		this._options.verticalAlign = value;
++		this.justifyContent = getDialogVerticalAlign(value);
++	}
++	set safeAreaTop(value) {
++		this._options.safeAreaTop = value;
++		this.paddingTop = value ?? 0;
++	}
++	set safeAreaBottom(value) {
++		this._options.safeAreaBottom = value;
++		this.paddingBottom = value ?? 0;
++	}
+ 	set backdropColor(value) {
+ 		this._options.backdropColor = value;
+ 		this._backdrop.updateContainerOptions(this._options);
+diff --git a/dist/react.mjs b/dist/react.mjs
+index 157bd9c3ba3101810e02da720b8763425fd7b0fd..e06b00ae226c8ea4ef307c48caa3507dbb03bc78 100644
+--- a/dist/react.mjs
++++ b/dist/react.mjs
+@@ -178,8 +178,18 @@ function DialogProvider(props) {
+ 		renderer
+ 	]);
+ 	useEffect(() => {
+-		container.updateDimensions(dimensions.width);
+-	}, [container, dimensions.width]);
++		container.updateDimensions(dimensions.width, dimensions.height);
++	}, [container, dimensions.width, dimensions.height]);
++	useEffect(() => {
++		container.verticalAlign = containerOptions.verticalAlign;
++		container.safeAreaTop = containerOptions.safeAreaTop;
++		container.safeAreaBottom = containerOptions.safeAreaBottom;
++	}, [
++		container,
++		containerOptions.verticalAlign,
++		containerOptions.safeAreaTop,
++		containerOptions.safeAreaBottom
++	]);
+ 	const portals = useMemo(() => {
+ 		if (!dialogs || dialogs.length === 0) return [];
+ 		const portals$1 = [];
+diff --git a/dist/solid.mjs b/dist/solid.mjs
+index 2aea0ede350d79b5a8e533323fe70480bbd7f3ce..2ba19ceb74faa61c4e58596e927637a839da178e 100644
+--- a/dist/solid.mjs
++++ b/dist/solid.mjs
+@@ -176,6 +176,9 @@ function DialogProvider(props) {
+ 		closeOnClickOutside: props.closeOnClickOutside,
+ 		backdropColor: props.backdropColor,
+ 		backdropOpacity: props.backdropOpacity,
++		verticalAlign: props.verticalAlign,
++		safeAreaTop: props.safeAreaTop,
++		safeAreaBottom: props.safeAreaBottom,
+ 		unstyled: props.unstyled
+ 	});
+ 	renderer.root.add(container);
+@@ -197,7 +200,12 @@ function DialogProvider(props) {
+ 	});
+ 	createEffect(() => {
+ 		const dims = dimensions();
+-		container.updateDimensions(dims.width);
++		container.updateDimensions(dims.width, dims.height);
++	});
++	createEffect(() => {
++		container.verticalAlign = props.verticalAlign;
++		container.safeAreaTop = props.safeAreaTop;
++		container.safeAreaBottom = props.safeAreaBottom;
+ 	});
+ 	const portalItems = createMemo(() => {
+ 		dialogs();
+diff --git a/dist/themes-CS3n3Ng8.d.mts b/dist/themes-CS3n3Ng8.d.mts
+index 0d75a0a486201d4b3cde5d295f2658ca3aa582fa..ca6123010ad1ef56c6714948f2275e5a8db09563 100644
+--- a/dist/themes-CS3n3Ng8.d.mts
++++ b/dist/themes-CS3n3Ng8.d.mts
+@@ -8,6 +8,8 @@ declare const JSX_CONTENT_KEY: unique symbol;
+ //#region src/types.d.ts
+ type DialogId = string | number;
+ type DialogSize = "small" | "medium" | "large" | "full";
++type DialogVerticalAlign = "start" | "center" | "end";
++type DialogSafeAreaValue = number | `${number}%`;
+ interface DialogStyle {
+   backgroundColor?: string;
+   borderColor?: string;
+@@ -83,6 +85,12 @@ interface DialogContainerOptions {
+   backdropColor?: string;
+   /** 0-1 (number) or "50%" (string). @default 0.35 */
+   backdropOpacity?: number | string;
++  /** Vertical alignment inside the dialog overlay. @default "center" */
++  verticalAlign?: DialogVerticalAlign;
++  /** Reserved top rows or percentage of terminal height for keyboard/safe-area layouts. */
++  safeAreaTop?: DialogSafeAreaValue;
++  /** Reserved bottom rows or percentage of terminal height for keyboard/safe-area layouts. */
++  safeAreaBottom?: DialogSafeAreaValue;
+   unstyled?: boolean;
+ }
+ /**
+@@ -170,5 +178,5 @@ declare const themes: {
+   readonly unstyled: DialogTheme;
+ };
+ //#endregion
+-export { DialogToClose as C, DialogStyle as S, isDialogToClose as T, DialogContentFactory as _, DialogTheme as a, DialogShowOptions as b, unstyled as c, BaseChoiceOptions as d, BaseConfirmOptions as f, DialogContainerOptions as g, Dialog as h, DEFAULT_STYLE as i, AsyncDialogOptions as l, BasePromptOptions as m, DEFAULT_BACKDROP_OPACITY as n, minimal as o, BaseDialogActions as p, DEFAULT_PADDING as r, themes as s, DEFAULT_BACKDROP_COLOR as t, BaseAlertOptions as u, DialogId as v, InternalDialog as w, DialogSize as x, DialogOptions as y };
++export { DialogToClose as C, DialogSafeAreaValue as D, DialogStyle as S, isDialogToClose as T, DialogContentFactory as _, DialogTheme as a, DialogShowOptions as b, unstyled as c, BaseChoiceOptions as d, DialogVerticalAlign as e, BaseConfirmOptions as f, DialogContainerOptions as g, Dialog as h, DEFAULT_STYLE as i, AsyncDialogOptions as l, BasePromptOptions as m, DEFAULT_BACKDROP_OPACITY as n, minimal as o, BaseDialogActions as p, DEFAULT_PADDING as r, themes as s, DEFAULT_BACKDROP_COLOR as t, BaseAlertOptions as u, DialogId as v, InternalDialog as w, DialogSize as x, DialogOptions as y };
+ //# sourceMappingURL=themes-CS3n3Ng8.d.mts.map

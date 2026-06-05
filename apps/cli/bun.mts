@@ -4,7 +4,9 @@ import {
 	existsSync,
 	mkdirSync,
 	readdirSync,
+	readFileSync,
 	statSync,
+	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +14,23 @@ import { $ } from "bun";
 
 function defineProcessEnv(name: string): string {
 	return JSON.stringify(process.env[name] ?? "");
+}
+
+function stripGeneratedBunDirective(filePath: string): void {
+	const source = readFileSync(filePath, "utf8");
+	const stripped = source
+		.replace(/^#![^\n]*\n\/\/ @bun\r?\n/, (match) => {
+			const shebangEnd = match.indexOf("\n") + 1;
+			return match.slice(0, shebangEnd);
+		})
+		.replace(/^\/\/ @bun\r?\n/, "");
+
+	if (stripped === source) return;
+
+	// Android Bun currently interprets non-ASCII literals in files marked with
+	// `// @bun` as Latin-1 byte code units, which turns TUI glyphs into mojibake.
+	// The runnable bundle does not need this generated marker.
+	writeFileSync(filePath, stripped, "utf8");
 }
 
 const sourcemap = Bun.env.CLINE_SOURCEMAPS === "1" ? "linked" : "none";
@@ -129,6 +148,8 @@ if (result.logs.length > 0) {
 		console.warn(log);
 	}
 }
+
+stripGeneratedBunDirective(join(rootDir, "./dist/index.js"));
 
 const coreBootstrapPath = join(
 	rootDir,
