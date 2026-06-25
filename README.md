@@ -81,21 +81,29 @@ https://github.com/IChouChiang/bun-android-ffi
 
 ## Termux TUI Defaults
 
-This port adjusts two mobile terminal behaviors by default:
+This port adjusts three mobile terminal behaviors by default:
 
 ```text
 CLINE_TUI_TERMUX_DIALOG_SAFE_AREA_BOTTOM=15%
 CLINE_TUI_TERMUX_MOUSE=off
+CLINE_TUI_TERMUX_TOUCH_SCROLL=transcript
 ```
 
 The first keeps dialogs such as `/settings`, `/model`, and `/history` higher
 above the Android keyboard. The second lets Termux open the soft keyboard when
-the screen is touched.
+the screen is touched. The third maps Termux finger scrolling to the transcript;
+use `Alt+Up` and `Alt+Down` to browse prompt history.
 
 To restore OpenTUI mouse tracking:
 
 ```sh
 CLINE_TUI_TERMUX_MOUSE=on cline --tui
+```
+
+To restore plain `Up`/`Down` prompt-history navigation:
+
+```sh
+CLINE_TUI_TERMUX_TOUCH_SCROLL=input cline --tui
 ```
 
 ## Verify

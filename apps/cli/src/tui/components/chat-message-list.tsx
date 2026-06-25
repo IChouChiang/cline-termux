@@ -40,6 +40,12 @@ export const ChatMessageList = forwardRef<
 		if (!scrollbox) return;
 
 		switch (command) {
+			case "messages_line_up":
+				scrollbox.scrollBy(-1);
+				return;
+			case "messages_line_down":
+				scrollbox.scrollBy(1);
+				return;
 			case "messages_page_up":
 				scrollbox.scrollBy(-scrollbox.height / 2);
 				return;

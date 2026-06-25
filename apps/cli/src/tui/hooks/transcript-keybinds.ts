@@ -1,4 +1,6 @@
 export type TranscriptCommand =
+	| "messages_line_up"
+	| "messages_line_down"
 	| "messages_page_up"
 	| "messages_page_down"
 	| "messages_half_page_up"
@@ -20,8 +22,13 @@ type TranscriptKeybind = {
 	shift?: boolean;
 };
 
-export const TRANSCRIPT_KEYBINDS: Record<
+type TranscriptKeyboundCommand = Exclude<
 	TranscriptCommand,
+	"messages_line_up" | "messages_line_down"
+>;
+
+export const TRANSCRIPT_KEYBINDS: Record<
+	TranscriptKeyboundCommand,
 	readonly TranscriptKeybind[]
 > = {
 	messages_page_up: [{ name: "pageup" }, { name: "b", ctrl: true, meta: true }],

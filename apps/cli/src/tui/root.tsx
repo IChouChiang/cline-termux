@@ -57,8 +57,9 @@ import { hydrateSessionMessages } from "./utils/hydrate-messages";
 import { isProviderConfigured } from "./utils/provider-configured";
 import { createSelectionCopyHandler } from "./utils/selection-copy";
 import type { LocalSlashCommandInvocation } from "./utils/skill-command-input";
-import { getTermuxDialogSafeAreaOptions } from "./utils/termux-dialog-safe-area";
 import { deriveTerminalTitle } from "./utils/terminal-title";
+import { getTermuxDialogSafeAreaOptions } from "./utils/termux-dialog-safe-area";
+import { shouldUseTermuxTranscriptTouchScroll } from "./utils/termux-touch-scroll";
 import { ChatView } from "./views/chat-view";
 import { HomeView } from "./views/home-view";
 import { type OnboardingResult, OnboardingView } from "./views/onboarding";
@@ -104,6 +105,10 @@ function App(props: TuiProps) {
 				initialPrompt: props.initialPrompt,
 			}),
 		[appView, props.initialPrompt, session.entries],
+	);
+	const termuxTranscriptTouchScroll = useMemo(
+		() => shouldUseTermuxTranscriptTouchScroll(),
+		[],
 	);
 
 	useEffect(() => {
@@ -854,6 +859,7 @@ function App(props: TuiProps) {
 		onRestoreCheckpoint: openCheckpointRestore,
 		onOpenCommandPalette: openCommandPalette,
 		onCommandPaletteShortcut: runCommandPaletteShortcut,
+		termuxTranscriptTouchScroll,
 	});
 
 	const acOptions = autocomplete.getFilteredOptions();

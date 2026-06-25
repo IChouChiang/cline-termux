@@ -5,7 +5,10 @@ import { useRef } from "react";
 import type { TranscriptScrollHandle } from "../components/chat-message-list";
 import { useSession } from "../contexts/session-context";
 import type { AppView, QueuedPromptItem } from "../types";
-import { shouldHandleInputHistory } from "./root-keyboard-routing";
+import {
+	matchTermuxTranscriptTouchScrollKey,
+	shouldHandleInputHistory,
+} from "./root-keyboard-routing";
 import { matchTranscriptKeybind } from "./transcript-keybinds";
 import type { AutocompleteOption, useAutocomplete } from "./use-autocomplete";
 import type { useInputHistory } from "./use-input-history";
@@ -60,6 +63,7 @@ export function useRootKeyboard(input: {
 	onRestoreCheckpoint: () => Promise<void>;
 	onOpenCommandPalette: () => Promise<void>;
 	onCommandPaletteShortcut: (key: KeyEvent) => boolean;
+	termuxTranscriptTouchScroll?: boolean;
 }) {
 	const session = useSession();
 	const lastEscapeRef = useRef(0);
@@ -206,6 +210,19 @@ export function useRootKeyboard(input: {
 		) {
 			key.preventDefault();
 			queuedSelection.promote(selectedQueuedPromptId);
+			return;
+		}
+
+		const termuxTouchScrollCommand = matchTermuxTranscriptTouchScrollKey({
+			enabled: input.termuxTranscriptTouchScroll === true,
+			key,
+			hasTranscript: Boolean(input.transcriptScrollRef.current),
+		});
+		if (termuxTouchScrollCommand) {
+			key.preventDefault();
+			input.transcriptScrollRef.current?.runTranscriptCommand(
+				termuxTouchScrollCommand,
+			);
 			return;
 		}
 
