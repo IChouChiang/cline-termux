@@ -62,7 +62,7 @@ usage() {
 Usage: bash install-cline-termux.sh [options]
 
 Options:
-  --version VERSION   Install a specific release tag, for example v3.0.20-termux.1
+  --version VERSION   Install a specific release tag, for example v3.0.29-termux.1
   --repo OWNER/REPO   Download from a different GitHub repository
   --install-base DIR  Install under DIR instead of $INSTALL_BASE
   --launcher PATH     Write the cline launcher to PATH instead of $LAUNCHER_PATH

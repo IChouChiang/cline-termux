@@ -9,8 +9,8 @@ official Cline release.
 Current port:
 
 ```text
-Cline CLI: 3.0.20
-Termux release: v3.0.20-termux.1
+Cline CLI: 3.0.29
+Termux release: v3.0.29-termux.1
 Platform: Android aarch64
 Command: cline
 ```
@@ -124,8 +124,7 @@ API keys.
 Tested on:
 
 ```text
-Samsung Android phone, Termux aarch64
-Samsung S7 tablet, Termux aarch64
+Samsung SM-S9380, Android 16, F-Droid Termux 0.118.3, aarch64
 ```
 
 Known limitations:

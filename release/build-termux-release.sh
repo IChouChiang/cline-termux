@@ -36,7 +36,7 @@ tested Termux Android/ARM64 runtime dependency tree.
 Options:
   --termux-host HOST     SSH host that can read the Termux runtime (default: $TERMUX_HOST)
   --runtime-dir DIR      Runtime dir on HOST containing node_modules (default: $TERMUX_RUNTIME_DIR)
-  --release VERSION      Release version/tag, for example v3.0.20-termux.1
+  --release VERSION      Release version/tag, for example v3.0.29-termux.1
   --skip-build           Use existing apps/cli/dist instead of rebuilding
   --keep-staging         Keep release/staging after the tarball is produced
   -h, --help             Show this help
