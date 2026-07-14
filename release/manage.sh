@@ -10,7 +10,7 @@ DEFAULT_HOST="$(node -e 'const p=require(process.argv[1]); console.log(p.termux.
 WORK_ROOT="$SCRIPT_DIR/.work"
 TOOLS_ROOT="$SCRIPT_DIR/.tools"
 CANDIDATE_ROOT="$SCRIPT_DIR/candidates"
-MANAGER_TEMP_ROOT="${CLINE_TERMUX_MANAGER_TEMP_ROOT:-$SCRIPT_DIR/staging}"
+MANAGER_TEMP_ROOT="${CLINE_TERMUX_MANAGER_TEMP_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/cline-termux/release-manager}"
 MIN_TEMP_MIB="${CLINE_TERMUX_MIN_TEMP_MIB:-4096}"
 CURL_RETRIES="${CLINE_TERMUX_CURL_RETRIES:-5}"
 CURL_MAX_TIME="${CLINE_TERMUX_CURL_MAX_TIME:-600}"
@@ -491,6 +491,20 @@ run_gate() {
 	"$@" 2>&1 | tee "$log_dir/$name.log"
 }
 
+cleanup_managed_temp() {
+	rm -rf -- "$1"
+}
+
+cleanup_candidate_run() {
+	local worktree="$1"
+	local branch="$2"
+	local candidate_temp="$3"
+	git -C "$REPO_ROOT" worktree remove --force "$worktree" >/dev/null 2>&1 || true
+	git -C "$REPO_ROOT" branch -D "$branch" >/dev/null 2>&1 || true
+	cleanup_managed_temp "$candidate_temp"
+	git -C "$REPO_ROOT" worktree prune >/dev/null 2>&1 || true
+}
+
 install_worktree_dependencies() {
 	local worktree="$1"
 	local bun_bin="$2"
@@ -618,7 +632,7 @@ candidate_release() {
 
 	local target_commit cli_version release_tag release_name branch worktree candidate_dir
 	local bun_version bun_bin gitleaks_version gitleaks_bin patchelf_version patchelf_bin
-	local log_dir merge_status candidate_commit notes_file candidate_temp
+	local log_dir merge_status candidate_commit notes_file candidate_temp cleanup_trap
 	target_commit="$(git -C "$REPO_ROOT" rev-parse "$target_tag^{}")"
 	cli_version="$(git_json_get "$target_tag" apps/cli/package.json version)"
 	release_tag="v$cli_version-termux.$revision"
@@ -641,12 +655,9 @@ candidate_release() {
 	log_dir="$candidate_dir/logs"
 	mkdir -p "$WORK_ROOT" "$log_dir"
 	candidate_temp="$(make_managed_temp_dir "candidate-${release_tag#v}")"
-	cleanup_candidate_run() {
-		git -C "$REPO_ROOT" worktree remove --force "$worktree" >/dev/null 2>&1 || true
-		git -C "$REPO_ROOT" branch -D "$branch" >/dev/null 2>&1 || true
-		rm -rf -- "$candidate_temp"
-	}
-	trap cleanup_candidate_run EXIT
+	printf -v cleanup_trap 'cleanup_candidate_run %q %q %q' \
+		"$worktree" "$branch" "$candidate_temp"
+	trap "$cleanup_trap" EXIT
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
 
@@ -728,7 +739,7 @@ candidate_release() {
 		--notes-file "$notes_file"
 	install_published_candidate "$host" "$release_tag" "$cli_version"
 
-	cleanup_candidate_run
+	cleanup_candidate_run "$worktree" "$branch" "$candidate_temp"
 	trap - EXIT INT TERM
 	echo
 	ok "$release_tag is installed on $host and ready for manual testing"
@@ -823,7 +834,7 @@ promote_release() {
 	git -C "$REPO_ROOT" fetch --quiet origin main "refs/tags/$release_tag:refs/tags/$release_tag"
 
 	local release_json prerelease draft tag_commit temp_manifest cli_version
-	local promotion_temp asset_dir asset_base archive_name
+	local promotion_temp asset_dir asset_base archive_name cleanup_trap
 	local previous_latest fallback_release rollback_release changed_release_state=false
 	release_json="$(gh release view "$release_tag" --repo "$GITHUB_REPO" --json isDraft,isPrerelease)"
 	prerelease="$(printf '%s' "$release_json" | node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(0,"utf8")).isPrerelease)')"
@@ -837,10 +848,8 @@ promote_release() {
 	align_main_for_promotion "$tag_commit"
 
 	promotion_temp="$(make_managed_temp_dir "promote-${release_tag#v}")"
-	cleanup_promotion_temp() {
-		rm -rf -- "$promotion_temp"
-	}
-	trap cleanup_promotion_temp EXIT
+	printf -v cleanup_trap 'cleanup_managed_temp %q' "$promotion_temp"
+	trap "$cleanup_trap" EXIT
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
 	local TMPDIR="$promotion_temp"
@@ -906,7 +915,7 @@ promote_release() {
 		fail "promotion acceptance failed; main remains at the candidate and this command can be rerun safely"
 	fi
 
-	cleanup_promotion_temp
+	cleanup_managed_temp "$promotion_temp"
 	trap - EXIT INT TERM
 	ok "$release_tag is stable, latest, and installed from the canonical latest URL"
 	echo "The final release check is now the clean install/update on termux_wifi_s7."

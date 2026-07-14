@@ -79,9 +79,12 @@ The candidate command:
 12. runs version, help, FFI `dlopen`, and a visible-frame TUI check
 
 The official TUI suite creates many isolated Cline homes without removing them.
-The manager points `TMPDIR` at its own ignored `release/staging/` run directory
-and removes the entire directory on success, failure, or interruption. Override
-the location with `CLINE_TERMUX_MANAGER_TEMP_ROOT` or the required reserve with
+The manager points `TMPDIR` at a disposable run directory under
+`${XDG_CACHE_HOME:-$HOME/.cache}/cline-termux/release-manager/`, outside the
+source repository. This matters for tests that verify behavior outside a Git
+repository or Node package boundary. The manager removes the entire directory
+on success, failure, or interruption. Override the location with
+`CLINE_TERMUX_MANAGER_TEMP_ROOT` or the required reserve with
 `CLINE_TERMUX_MIN_TEMP_MIB` when necessary.
 
 Nothing is pushed before the source and unpublished-package gates pass. The

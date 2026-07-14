@@ -72,6 +72,25 @@ case "$managed_temp" in
 esac
 rm -rf "$managed_temp"
 
+trap_temp="$(make_managed_temp_dir trap-scope)"
+if (
+	candidate_scope_failure() {
+		local scoped_worktree="$WORK_DIR/missing-worktree"
+		local scoped_branch="missing-branch"
+		local scoped_temp="$trap_temp"
+		local scoped_cleanup
+		printf -v scoped_cleanup 'cleanup_candidate_run %q %q %q' \
+			"$scoped_worktree" "$scoped_branch" "$scoped_temp"
+		trap "$scoped_cleanup" EXIT
+		return 1
+	}
+	candidate_scope_failure
+); then
+	fail_test "candidate cleanup scope test unexpectedly succeeded"
+fi
+[ ! -e "$trap_temp" ] \
+	|| fail_test "candidate cleanup lost its paths after function scope unwound"
+
 available_kib="$(df -Pk "$CLINE_TERMUX_MANAGER_TEMP_ROOT" | awk 'END { print $4 }')"
 original_min_temp_mib="$MIN_TEMP_MIB"
 MIN_TEMP_MIB="$((available_kib / 1024 + 1))"
