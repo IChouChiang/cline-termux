@@ -886,6 +886,7 @@ function App(props: TuiProps) {
 		repoStatus,
 		textareaRef: promptInput.textareaRef,
 		transcriptScrollRef,
+		loadIndividualSubscriptionPlans: props.loadIndividualSubscriptionPlans,
 		queuedPrompts,
 		selectedQueuedPromptId,
 		editingQueuedPrompt,
