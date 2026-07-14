@@ -7,10 +7,14 @@
 export * as Llms from "@cline/llms";
 export {
 	ClineNotSubscribedError,
+	ClineOrgIndividualInferenceSubscriptionError,
+	getClineOrgIndividualInferenceSubscriptionMessage,
 	getClineNotSubscribedMessage,
 	getClinePassSubscriptionUrl,
 	isClineNotSubscribedError,
 	isClineNotSubscribedMessage,
+	isClineOrgIndividualInferenceSubscriptionError,
+	isClineOrgIndividualInferenceSubscriptionMessage,
 } from "@cline/llms";
 // Shared contracts and path helpers re-exported for app consumers.
 export type {
@@ -200,6 +204,8 @@ export type {
 	ClineCoreOptions,
 	ClineCoreSettingsApi,
 	ClineCoreStartInput,
+	CompareCheckpointInput,
+	CompareCheckpointResult,
 	HubOptions,
 	RemoteOptions,
 	RestoreInput,
@@ -290,6 +296,8 @@ export {
 	type McpServerSnapshot,
 	type McpServerTransportConfig,
 	type McpSettingsFile,
+	type McpSettingsLockOptions,
+	type McpSettingsMutator,
 	type McpSseTransportConfig,
 	type McpStdioTransportConfig,
 	type McpStreamableHttpTransportConfig,
@@ -305,6 +313,12 @@ export {
 	type SetMcpServerDisabledOptions,
 	setMcpServerDisabled,
 	updateMcpServerOAuthState,
+	updateMcpServerOAuthStateAsync,
+	updateMcpSettingsFile,
+	updateMcpSettingsFileSync,
+	McpSettingsLockTimeoutError,
+	McpSettingsMutatorPurityError,
+	McpSettingsUpdateSkippedError,
 } from "./extensions/mcp";
 export {
 	type AgentTask,
@@ -535,6 +549,7 @@ export {
 } from "./services/storage/team-store";
 export { resolveCoreDistinctId } from "./services/telemetry";
 export type {
+	CaptureAgentUnexpectedReasoningTokensInput,
 	CaptureCompactionExecutedProperties,
 	CaptureCompactionSkippedProperties,
 	TelemetryAgentIdentityProperties,
@@ -549,6 +564,7 @@ export {
 	CORE_TELEMETRY_EVENTS,
 	captureAgentCreated,
 	captureAgentTeamCreated,
+	captureAgentUnexpectedReasoningTokens,
 	captureAuthFailed,
 	captureAuthLoggedOut,
 	captureAuthStarted,
@@ -618,7 +634,18 @@ export {
 	generateWorkspaceInfoWithDiagnostics,
 	normalizeWorkspacePath,
 } from "./services/workspace/workspace-manifest";
-export { readSessionCheckpointHistory } from "./session/checkpoint-restore";
+export {
+	buildCheckpointWorkspaceDiff,
+	compareCheckpointToWorkspace,
+	createCheckpointComparePlan,
+	type CheckpointComparePlan,
+	type CheckpointContentDiff,
+	type CheckpointWorkspaceCompareResult,
+} from "./session/checkpoint-diff";
+export {
+	findCheckpointForRun,
+	readSessionCheckpointHistory,
+} from "./session/checkpoint-restore";
 export {
 	deriveSubsessionStatus,
 	makeSubSessionId,
@@ -694,8 +721,11 @@ export {
 	type CreateDefaultToolsOptions,
 	createBuiltinTools,
 	createDefaultExecutors,
+	createDefaultShellExecutor,
 	createDefaultTools,
 	createDefaultToolsWithPreset,
+	createShellExecutor,
+	createShellTool,
 	createToolPoliciesWithPreset,
 	type DefaultExecutorsOptions,
 	type DefaultToolName,
@@ -705,10 +735,16 @@ export {
 	getCoreBuiltinToolCatalog,
 	getCoreDefaultEnabledToolIds,
 	getCoreHeadlessToolNames,
+	MAX_COMMAND_OUTPUT_CHARS,
 	resolveCoreSelectedToolIds,
+	type StructuredCommandInput,
+	StructuredCommandInputSchema,
 	TEAM_TOOL_NAMES,
+	truncateCommandOutput,
 	type ToolCatalogEntry,
 	type ToolExecutors,
+	type ShellExecutor,
+	type ShellExecutorOptions,
 	type ToolPolicyPresetName,
 	type ToolPresetName,
 	ToolPresets,

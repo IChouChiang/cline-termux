@@ -3,7 +3,9 @@ import type React from "react";
 import { useState } from "react";
 import "opentui-spinner/react";
 import {
-	getClinePassSubscriptionUrl,
+	getCliSubscriptionUrl,
+	getClineOrgIndividualInferenceSubscriptionMessage,
+	isClineOrgIndividualInferenceSubscriptionErrorMessage,
 	isClinePassSubscriptionError,
 } from "../../utils/cline-pass-errors";
 import {
@@ -295,7 +297,7 @@ function ClineCreditsErrorView(props: { defaultFg?: string }) {
 }
 
 function ClinePassSubscriptionErrorView(props: { defaultFg?: string }) {
-	const subscriptionUrl = getClinePassSubscriptionUrl();
+	const subscriptionUrl = getCliSubscriptionUrl();
 	return (
 		<box flexDirection="row">
 			<text fg="yellow" content="* " />
@@ -324,6 +326,30 @@ function ClinePassSubscriptionErrorView(props: { defaultFg?: string }) {
 						<a href={subscriptionUrl}>{subscriptionUrl}</a>
 					</text>
 				</box>
+			</box>
+		</box>
+	);
+}
+
+function ClineOrgIndividualInferenceSubscriptionErrorView(props: {
+	defaultFg?: string;
+}) {
+	return (
+		<box flexDirection="row">
+			<text fg="yellow" content="* " />
+			<box
+				flexDirection="column"
+				border
+				borderStyle="rounded"
+				borderColor="yellow"
+				paddingX={1}
+			>
+				<text fg="yellow">Personal ClinePass required</text>
+				<text
+					fg={props.defaultFg}
+					selectable
+					content={getClineOrgIndividualInferenceSubscriptionMessage()}
+				/>
 			</box>
 		</box>
 	);
@@ -426,6 +452,13 @@ export function ChatEntryView(props: {
 		case "error":
 			if (isClineAccountCreditsErrorMessage(entry.text)) {
 				return <ClineCreditsErrorView defaultFg={defaultFg} />;
+			}
+			if (isClineOrgIndividualInferenceSubscriptionErrorMessage(entry.text)) {
+				return (
+					<ClineOrgIndividualInferenceSubscriptionErrorView
+						defaultFg={defaultFg}
+					/>
+				);
 			}
 			if (isClinePassSubscriptionError(entry.text)) {
 				return <ClinePassSubscriptionErrorView defaultFg={defaultFg} />;
