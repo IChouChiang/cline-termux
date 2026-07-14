@@ -6,6 +6,7 @@ import "opentui-spinner/react";
 import {
 	getClineOrgIndividualInferenceSubscriptionMessage,
 	getCliSubscriptionUrl,
+	getIndividualPlanFeatures,
 	isClineOrgIndividualInferenceSubscriptionErrorMessage,
 	isClinePassSubscriptionError,
 } from "../../utils/cline-pass-errors";
@@ -36,12 +37,6 @@ import {
 	shortenPath,
 } from "../utils/tool-parsing";
 import { ToolOutput } from "./tool-output";
-
-function getIndividualPlanFeatures(plans: ClineSubscriptionPlan[]): string[] {
-	const planWithFeatures = plans.find((plan) => plan.interval === "Monthly");
-
-	return planWithFeatures?.features?.included ?? [];
-}
 
 function trimLeading(text: string): string {
 	return text.replace(/^\n+/, "");
@@ -274,14 +269,8 @@ function ToolCallView(props: {
 	);
 }
 
-const CLINE_PASS_ENABLED_OUT_OF_CREDITS_MESSAGE =
-	"You have run out of Cline credits. Add credits in the dashboard or purchase and switch to ClinePass to continue.";
-const OUT_OF_CREDITS_MESSAGE =
-	"You have run out of Cline credits. Add credits in the dashboard to continue.";
-
-function ClineCreditsErrorView(props: { defaultFg?: string }) {
-	const isClinePassEnabled =
-		getCliFeatureFlagsService().getBooleanFlagEnabled("ext-cline-pass");
+function ClineCreditsClinePassErrorView(props: { defaultFg?: string }) {
+	const subscriptionUrl = getCliSubscriptionUrl();
 	return (
 		<box flexDirection="row">
 			<text fg="red" content="* " />
@@ -297,9 +286,58 @@ function ClineCreditsErrorView(props: { defaultFg?: string }) {
 					fg={props.defaultFg}
 					selectable
 					content={
-						isClinePassEnabled
-							? CLINE_PASS_ENABLED_OUT_OF_CREDITS_MESSAGE
-							: OUT_OF_CREDITS_MESSAGE
+						"You have run out of Cline credits. Add credits in the dashboard or purchase and switch to ClinePass to continue."
+					}
+				/>
+				<box flexDirection="row">
+					<text fg="gray">Purchase Credits: </text>
+					<text fg="cyan" selectable>
+						<a href={CLINE_CREDITS_DASHBOARD_URL}>
+							{CLINE_CREDITS_DASHBOARD_URL}
+						</a>
+					</text>
+				</box>
+				<box flexDirection="row">
+					<text fg="gray">Purchase ClinePass: </text>
+					<text fg="cyan" selectable>
+						<a href={subscriptionUrl}>{subscriptionUrl}</a>
+					</text>
+				</box>
+				<box flexDirection="row">
+					<text fg="gray">Switch to ClinePass: </text>
+					<text fg="gray">
+						type /settings in CLI and switch provider to ClinePass
+					</text>
+				</box>
+			</box>
+		</box>
+	);
+}
+
+function ClineCreditsErrorView(props: { defaultFg?: string }) {
+	const isClinePassEnabled =
+		getCliFeatureFlagsService().getBooleanFlagEnabled("ext-cline-pass");
+
+	if (isClinePassEnabled) {
+		return <ClineCreditsClinePassErrorView defaultFg={props.defaultFg} />;
+	}
+
+	return (
+		<box flexDirection="row">
+			<text fg="red" content="* " />
+			<box
+				flexDirection="column"
+				border
+				borderStyle="rounded"
+				borderColor="red"
+				paddingX={1}
+			>
+				<text fg="red">Cline Credits depleted</text>
+				<text
+					fg={props.defaultFg}
+					selectable
+					content={
+						"You have run out of Cline credits. Add credits in the dashboard to continue."
 					}
 				/>
 				<box flexDirection="row">
@@ -363,12 +401,10 @@ function ClinePassSubscriptionErrorView(props: {
 					<box flexDirection="column" marginTop={1}>
 						<text fg={props.defaultFg}>ClinePass includes:</text>
 						{planFeatures.map((feature) => (
-							<box key={feature} flexDirection="row">
-								<text fg="green" content="✓ " />
-								<text fg={props.defaultFg} selectable>
-									{feature}
-								</text>
-							</box>
+							<text key={feature} fg={props.defaultFg} selectable>
+								<span fg="green">✓ </span>
+								<span>{feature}</span>
+							</text>
 						))}
 					</box>
 				)}
