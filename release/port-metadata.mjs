@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
+const termuxPatchedDependencies = {
+	"@opentui/core@0.1.102": "patches/@opentui%2Fcore@0.1.102.patch",
+	"@opentui-ui/dialog@0.1.2": "patches/@opentui-ui%2Fdialog@0.1.2.patch",
+};
 
 function fail(message) {
 	console.error(`[fail] ${message}`);
@@ -47,9 +51,7 @@ function updatePortMetadata() {
 	const revisionMatch = releaseTag.match(/-termux\.(\d+)$/);
 	if (!revisionMatch) fail(`invalid Termux release tag: ${releaseTag}`);
 
-	rootPackage.patchedDependencies = {
-		"@opentui-ui/dialog@0.1.2": "patches/@opentui-ui%2Fdialog@0.1.2.patch",
-	};
+	rootPackage.patchedDependencies = termuxPatchedDependencies;
 	writeJson(rootPackagePath, rootPackage);
 
 	manifest.upstream.tag = upstreamTag;
@@ -104,9 +106,7 @@ function writeRuntimePackage() {
 		os: ["android"],
 		cpu: ["arm64"],
 		dependencies,
-		patchedDependencies: {
-			"@opentui-ui/dialog@0.1.2": "patches/@opentui-ui%2Fdialog@0.1.2.patch",
-		},
+		patchedDependencies: termuxPatchedDependencies,
 	});
 }
 

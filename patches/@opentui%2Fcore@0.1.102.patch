@@ -1,0 +1,12 @@
+diff --git a/index-qpcsqve6.js b/index-qpcsqve6.js
+--- a/index-qpcsqve6.js
++++ b/index-qpcsqve6.js
+@@ -20750,7 +20750,7 @@ class CliRenderer extends EventEmitter {
+   if (config.useThread === undefined) {
+     config.useThread = true;
+   }
+-  if (process.platform === "linux") {
++  if (process.platform === "linux" || process.platform === "android") {
+     config.useThread = false;
+   }
+   ziglib.setUseThread(rendererPtr, config.useThread);

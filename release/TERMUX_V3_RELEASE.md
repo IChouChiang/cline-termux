@@ -19,13 +19,14 @@ runtime and UX patches.
 
 `release/port-manifest.json` records the maintained upstream tag and commit,
 the Termux release, pinned build toolchain, Bun FFI artifact, OpenTUI versions,
-dialog patch, and the small allowlist of expected merge conflicts.
+dependency patches, and the small allowlist of expected merge conflicts.
 
 The Cline archive is built from:
 
 - the committed Cline/OpenTUI source tree
 - the repository `bun.lock`
 - the Bun version pinned by upstream Cline
+- the committed OpenTUI Android renderer-thread patch
 - the committed OpenTUI dialog patch
 - a pinned `patchelf` step that adds `DT_NEEDED libc.so` to `libopentui.so`
 - the published Bun Android FFI artifact
@@ -38,6 +39,11 @@ The upstream Linux ARM64 OpenTUI ELF does not declare `libc.so` as a needed
 library. Android's linker consequently cannot resolve `getauxval` when Bun
 loads it directly. The builder adds that dependency deterministically and the
 phone gate verifies a real `dlopen()` before publication.
+
+OpenTUI disables its native renderer thread on Linux. The Android patch extends
+that existing platform rule to Android, where enabling the thread prevents the
+renderer and Bun event loop from making progress. The package and phone gates
+verify that this pinned patch is present before accepting a candidate.
 
 ## Managed Flow
 
@@ -68,7 +74,7 @@ The candidate command:
 7. tests the unpublished archive in a Termux sandbox on the S25 Ultra
 8. pushes the final tag and creates a public GitHub prerelease
 9. installs that exact release URL on the S25 Ultra
-10. runs version, help, FFI `dlopen`, and pseudo-terminal TUI checks
+10. runs version, help, FFI `dlopen`, and a visible-frame TUI check
 
 Nothing is pushed before the source and unpublished-package gates pass. The
 candidate tag uses the final release name, such as `v3.0.30-termux.1`, so the

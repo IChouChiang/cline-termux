@@ -111,6 +111,10 @@ CLINE_TERMUX_FORCE=1 \
 [ -L "$WORK_DIR/bin/bun-ffi" ] || fail "bun-ffi symlink was not created"
 [ -f "$WORK_DIR/opt/cline-termux/current/node_modules/@opentui/core-android-arm64/libopentui.so" ] \
 	|| fail "OpenTUI Android native library missing from install"
+rg -q --glob 'index-*.js' \
+	'process\.platform === "linux" \|\| process\.platform === "android"' \
+	"$WORK_DIR/opt/cline-termux/current/node_modules/@opentui/core" \
+	|| fail "OpenTUI Android renderer-thread patch missing from install"
 
 VERSION_FILE="$WORK_DIR/opt/cline-termux/current/VERSION"
 CLINE_VERSION=$(sed -n 's/^cline=//p' "$VERSION_FILE" | head -n 1)

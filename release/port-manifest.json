@@ -33,8 +33,9 @@
     "core": "0.1.102",
     "react": "0.1.102",
     "dialog": "0.1.2",
+    "corePatch": "patches/@opentui%2Fcore@0.1.102.patch",
     "dialogPatch": "patches/@opentui-ui%2Fdialog@0.1.2.patch",
-    "nativeCompatibility": "add DT_NEEDED libc.so to libopentui.so"
+    "nativeCompatibility": "disable renderer threading on Android and add DT_NEEDED libc.so to libopentui.so"
   },
   "merge": {
     "allowedConflictPaths": [
