@@ -129,8 +129,11 @@ bash release/manage.sh promote v3.0.30-termux.1 --confirm-manual-test
 
 `candidate` builds once, runs the upstream CLI unit and TUI suites, tests the
 unpublished archive on Termux, publishes a prerelease, and installs that exact
-tag on the S25 Ultra. `promote` only changes release state after the manual
-touch/IME test; it does not rebuild or replace release assets. The manager has
+tag on the S25 Ultra. Host-side test files are confined to a disposable staging
+directory instead of accumulating in `/tmp`. `promote` only changes release
+state after the manual touch/IME test; it does not rebuild or replace release
+assets. It waits for GitHub's Latest state, retries the complete canonical
+install check, and can safely resume an interrupted promotion. The manager has
 no range mode, so an upstream CLI release cannot be skipped accidentally.
 
 ## Uninstall

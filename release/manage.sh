@@ -10,8 +10,14 @@ DEFAULT_HOST="$(node -e 'const p=require(process.argv[1]); console.log(p.termux.
 WORK_ROOT="$SCRIPT_DIR/.work"
 TOOLS_ROOT="$SCRIPT_DIR/.tools"
 CANDIDATE_ROOT="$SCRIPT_DIR/candidates"
+MANAGER_TEMP_ROOT="${CLINE_TERMUX_MANAGER_TEMP_ROOT:-$SCRIPT_DIR/staging}"
+MIN_TEMP_MIB="${CLINE_TERMUX_MIN_TEMP_MIB:-4096}"
 CURL_RETRIES="${CLINE_TERMUX_CURL_RETRIES:-5}"
 CURL_MAX_TIME="${CLINE_TERMUX_CURL_MAX_TIME:-600}"
+LATEST_WAIT_ATTEMPTS="${CLINE_TERMUX_LATEST_WAIT_ATTEMPTS:-20}"
+LATEST_WAIT_SECONDS="${CLINE_TERMUX_LATEST_WAIT_SECONDS:-3}"
+LATEST_SMOKE_ATTEMPTS="${CLINE_TERMUX_LATEST_SMOKE_ATTEMPTS:-3}"
+LATEST_SMOKE_DELAY_SECONDS="${CLINE_TERMUX_LATEST_SMOKE_DELAY_SECONDS:-5}"
 
 fail() {
 	echo "[fail] $*" >&2
@@ -87,6 +93,36 @@ require_command() {
 	command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
 }
 
+require_positive_integer() {
+	local name="$1"
+	local value="$2"
+	[[ "$value" =~ ^[1-9][0-9]*$ ]] || fail "$name must be a positive integer"
+}
+
+require_nonnegative_integer() {
+	local name="$1"
+	local value="$2"
+	[[ "$value" =~ ^[0-9]+$ ]] || fail "$name must be a non-negative integer"
+}
+
+make_managed_temp_dir() {
+	local name="$1"
+	mkdir -p "$MANAGER_TEMP_ROOT"
+	mktemp -d "$MANAGER_TEMP_ROOT/$name.XXXXXX"
+}
+
+require_temp_space() {
+	require_positive_integer CLINE_TERMUX_MIN_TEMP_MIB "$MIN_TEMP_MIB"
+	mkdir -p "$MANAGER_TEMP_ROOT"
+	local available_kib required_kib
+	available_kib="$(df -Pk "$MANAGER_TEMP_ROOT" | awk 'END { print $4 }')"
+	[[ "$available_kib" =~ ^[0-9]+$ ]] \
+		|| fail "could not determine free space for $MANAGER_TEMP_ROOT"
+	required_kib=$((MIN_TEMP_MIB * 1024))
+	[ "$available_kib" -ge "$required_kib" ] || fail \
+		"release temporary storage needs ${MIN_TEMP_MIB} MiB free at $MANAGER_TEMP_ROOT; only $((available_kib / 1024)) MiB is available"
+}
+
 download_file() {
 	local url="$1"
 	local output="$2"
@@ -123,6 +159,58 @@ if [ "$release_tag" != - ]; then
 fi
 bash "$installer" "${install_args[@]}"
 REMOTE
+}
+
+latest_release_tag() {
+	gh api "repos/$GITHUB_REPO/releases/latest" --jq .tag_name
+}
+
+wait_for_latest_release() {
+	local expected_tag="$1"
+	local attempt actual_tag
+	require_positive_integer CLINE_TERMUX_LATEST_WAIT_ATTEMPTS "$LATEST_WAIT_ATTEMPTS"
+	require_nonnegative_integer CLINE_TERMUX_LATEST_WAIT_SECONDS "$LATEST_WAIT_SECONDS"
+	for ((attempt = 1; attempt <= LATEST_WAIT_ATTEMPTS; attempt++)); do
+		actual_tag="$(latest_release_tag 2>/dev/null || true)"
+		if [ "$actual_tag" = "$expected_tag" ]; then
+			ok "GitHub Latest resolves to $expected_tag"
+			return 0
+		fi
+		warn "GitHub Latest is ${actual_tag:-unavailable}; waiting for $expected_tag ($attempt/$LATEST_WAIT_ATTEMPTS)"
+		[ "$attempt" -eq "$LATEST_WAIT_ATTEMPTS" ] || sleep "$LATEST_WAIT_SECONDS"
+	done
+	return 1
+}
+
+install_latest_with_acceptance() {
+	local host="$1"
+	local release_tag="$2"
+	local cli_version="$3"
+	local latest_url="https://github.com/$GITHUB_REPO/releases/latest/download/install-cline-termux.sh"
+	local remote_test="~/tmp/test-installed-latest.sh"
+
+	install_release_on_host "$host" "$latest_url"
+	scp -q "$SCRIPT_DIR/test-installed-termux.sh" "$host:$remote_test"
+	ssh "$host" "bash $remote_test '$release_tag' '$cli_version'"
+}
+
+retry_latest_acceptance() {
+	local host="$1"
+	local release_tag="$2"
+	local cli_version="$3"
+	local attempt
+	require_positive_integer CLINE_TERMUX_LATEST_SMOKE_ATTEMPTS "$LATEST_SMOKE_ATTEMPTS"
+	require_nonnegative_integer CLINE_TERMUX_LATEST_SMOKE_DELAY_SECONDS "$LATEST_SMOKE_DELAY_SECONDS"
+	for ((attempt = 1; attempt <= LATEST_SMOKE_ATTEMPTS; attempt++)); do
+		info "Canonical latest install and acceptance ($attempt/$LATEST_SMOKE_ATTEMPTS)..."
+		if install_latest_with_acceptance "$host" "$release_tag" "$cli_version"; then
+			return 0
+		fi
+		warn "canonical latest acceptance attempt $attempt failed"
+		[ "$attempt" -eq "$LATEST_SMOKE_ATTEMPTS" ] \
+			|| sleep "$((LATEST_SMOKE_DELAY_SECONDS * attempt))"
+	done
+	return 1
 }
 
 require_clean_main() {
@@ -517,9 +605,10 @@ candidate_release() {
 		''|*[!0-9]*) fail "--revision must be a positive integer" ;;
 	esac
 	[ "$revision" -gt 0 ] || fail "--revision must be a positive integer"
-	for required in cmp curl gh scp sha256sum ssh timeout unzip; do
+	for required in cmp curl df gh scp sha256sum ssh timeout unzip; do
 		require_command "$required"
 	done
+	require_temp_space
 
 	require_clean_main
 	git -C "$REPO_ROOT" fetch --quiet origin main
@@ -529,7 +618,7 @@ candidate_release() {
 
 	local target_commit cli_version release_tag release_name branch worktree candidate_dir
 	local bun_version bun_bin gitleaks_version gitleaks_bin patchelf_version patchelf_bin
-	local log_dir merge_status candidate_commit notes_file
+	local log_dir merge_status candidate_commit notes_file candidate_temp
 	target_commit="$(git -C "$REPO_ROOT" rev-parse "$target_tag^{}")"
 	cli_version="$(git_json_get "$target_tag" apps/cli/package.json version)"
 	release_tag="v$cli_version-termux.$revision"
@@ -551,6 +640,16 @@ candidate_release() {
 	candidate_dir="$CANDIDATE_ROOT/$release_tag"
 	log_dir="$candidate_dir/logs"
 	mkdir -p "$WORK_ROOT" "$log_dir"
+	candidate_temp="$(make_managed_temp_dir "candidate-${release_tag#v}")"
+	cleanup_candidate_run() {
+		git -C "$REPO_ROOT" worktree remove --force "$worktree" >/dev/null 2>&1 || true
+		git -C "$REPO_ROOT" branch -D "$branch" >/dev/null 2>&1 || true
+		rm -rf -- "$candidate_temp"
+	}
+	trap cleanup_candidate_run EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+
 	if git -C "$REPO_ROOT" worktree list --porcelain \
 		| grep -Fxq "worktree $worktree"; then
 		git -C "$REPO_ROOT" worktree remove --force "$worktree"
@@ -559,16 +658,6 @@ candidate_release() {
 	rm -rf "$worktree"
 	git -C "$REPO_ROOT" worktree prune
 	git -C "$REPO_ROOT" worktree add -q -b "$branch" "$worktree" main
-
-	cleanup_candidate_worktree() {
-		local cleanup_worktree="$1"
-		local cleanup_branch="$2"
-		git -C "$REPO_ROOT" worktree remove --force "$cleanup_worktree" >/dev/null 2>&1 || true
-		git -C "$REPO_ROOT" branch -D "$cleanup_branch" >/dev/null 2>&1 || true
-	}
-	trap "cleanup_candidate_worktree '$worktree' '$branch'" EXIT
-	trap 'exit 130' INT
-	trap 'exit 143' TERM
 
 	info "Merging $target_tag in isolated worktree..."
 	set +e
@@ -583,24 +672,24 @@ candidate_release() {
 
 	node "$worktree/release/port-metadata.mjs" update \
 		"$target_tag" "$target_commit" "$release_tag"
-	install_worktree_dependencies \
+	TMPDIR="$candidate_temp" install_worktree_dependencies \
 		"$worktree" "$bun_bin" "$log_dir/dependency-install.log"
 	git -C "$worktree" add -A
 	[ -z "$(git -C "$worktree" diff --name-only --diff-filter=U)" ] \
 		|| fail "unresolved merge conflicts remain"
 
 	run_gate "$log_dir" release-manager \
-		bash "$worktree/release/test-manager-downloads.sh"
+		env TMPDIR="$candidate_temp" bash "$worktree/release/test-manager-downloads.sh"
 	run_gate "$log_dir" build-sdk \
-		bash -lc "cd '$worktree' && '$bun_bin' run build:sdk"
+		env TMPDIR="$candidate_temp" bash -lc "cd '$worktree' && '$bun_bin' run build:sdk"
 	run_gate "$log_dir" cli-unit \
-		bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli test:unit"
+		env TMPDIR="$candidate_temp" bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli test:unit"
 	run_gate "$log_dir" cli-typecheck \
-		bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli typecheck"
+		env TMPDIR="$candidate_temp" bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli typecheck"
 	run_gate "$log_dir" cli-build \
-		bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli build"
+		env TMPDIR="$candidate_temp" bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli build"
 	run_gate "$log_dir" cli-tui \
-		bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli test:e2e:cli:tui"
+		env TMPDIR="$candidate_temp" bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli test:e2e:cli:tui"
 
 	PATH="$(dirname "$gitleaks_bin"):$PATH" \
 		git -C "$worktree" commit -m "chore(termux): update to cli v$cli_version"
@@ -608,6 +697,7 @@ candidate_release() {
 	CLINE_TERMUX_DIST_DIR="$candidate_dir" \
 		BUN_BIN="$bun_bin" \
 		PATCHELF_BIN="$patchelf_bin" \
+		TMPDIR="$candidate_temp" \
 		bash "$worktree/release/build-termux-release.sh" \
 			--release "$release_tag" --skip-build
 	cp "$worktree/release/install-cline-termux.sh" "$candidate_dir/install-cline-termux.sh"
@@ -638,7 +728,7 @@ candidate_release() {
 		--notes-file "$notes_file"
 	install_published_candidate "$host" "$release_tag" "$cli_version"
 
-	cleanup_candidate_worktree "$worktree" "$branch"
+	cleanup_candidate_run
 	trap - EXIT INT TERM
 	echo
 	ok "$release_tag is installed on $host and ready for manual testing"
@@ -650,6 +740,59 @@ candidate_release() {
 	echo
 	echo "After that passes:"
 	echo "  bash release/manage.sh promote $release_tag --confirm-manual-test"
+}
+
+align_main_for_promotion() {
+	local tag_commit="$1"
+	local head_commit origin_commit
+	head_commit="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+	origin_commit="$(git -C "$REPO_ROOT" rev-parse origin/main)"
+
+	if [ "$head_commit" != "$origin_commit" ] \
+		&& [ "$head_commit" != "$tag_commit" ] \
+		&& [ "$origin_commit" != "$tag_commit" ]; then
+		fail "local main and origin/main diverged outside the promotion candidate"
+	fi
+	git -C "$REPO_ROOT" merge-base --is-ancestor "$head_commit" "$tag_commit" \
+		|| fail "local main is not an ancestor of the promotion candidate"
+	git -C "$REPO_ROOT" merge-base --is-ancestor "$origin_commit" "$tag_commit" \
+		|| fail "origin/main is not an ancestor of the promotion candidate"
+
+	if [ "$origin_commit" = "$tag_commit" ] && [ "$head_commit" != "$tag_commit" ]; then
+		info "Resuming promotion by fast-forwarding local main to origin/main..."
+		git -C "$REPO_ROOT" merge --ff-only origin/main
+	fi
+}
+
+previous_candidate_release() {
+	local tag_commit="$1"
+	local parent_commit
+	parent_commit="$(git -C "$REPO_ROOT" rev-parse "$tag_commit^1" 2>/dev/null)" \
+		|| return 1
+	git -C "$REPO_ROOT" show "$parent_commit:release/port-manifest.json" 2>/dev/null \
+		| node -e '
+const fs = require("fs")
+const manifest = JSON.parse(fs.readFileSync(0, "utf8"))
+if (!manifest.termux?.releaseTag) process.exit(1)
+console.log(manifest.termux.releaseTag)
+'
+}
+
+restore_failed_promotion() {
+	local release_tag="$1"
+	local rollback_release="$2"
+	local restore_prerelease="$3"
+
+	if [ -n "$rollback_release" ] && [ "$rollback_release" != "$release_tag" ]; then
+		warn "restoring $rollback_release as GitHub Latest"
+		gh release edit "$rollback_release" --repo "$GITHUB_REPO" --latest \
+			|| warn "could not restore $rollback_release as Latest"
+	fi
+	if [ "$restore_prerelease" = true ]; then
+		warn "restoring $release_tag to prerelease status"
+		gh release edit "$release_tag" --repo "$GITHUB_REPO" --prerelease \
+			|| warn "could not restore $release_tag to prerelease status"
+	fi
 }
 
 promote_release() {
@@ -672,18 +815,36 @@ promote_release() {
 	done
 	validate_release_tag "$release_tag"
 	[ "$confirmed" = true ] || fail "promotion requires --confirm-manual-test"
-	for required in cmp curl gh scp sha256sum ssh; do
+	for required in cmp curl df gh scp sha256sum ssh; do
 		require_command "$required"
 	done
 	require_clean_main
+	require_temp_space
 	git -C "$REPO_ROOT" fetch --quiet origin main "refs/tags/$release_tag:refs/tags/$release_tag"
 
-	local release_json prerelease tag_commit temp_manifest cli_version previous_release
-	local asset_dir asset_base archive_name
-	release_json="$(gh release view "$release_tag" --repo "$GITHUB_REPO" --json isPrerelease,tagName,assets)"
+	local release_json prerelease draft tag_commit temp_manifest cli_version
+	local promotion_temp asset_dir asset_base archive_name
+	local previous_latest fallback_release rollback_release changed_release_state=false
+	release_json="$(gh release view "$release_tag" --repo "$GITHUB_REPO" --json isDraft,isPrerelease)"
 	prerelease="$(printf '%s' "$release_json" | node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(0,"utf8")).isPrerelease)')"
-	[ "$prerelease" = true ] || fail "$release_tag is not a prerelease"
+	draft="$(printf '%s' "$release_json" | node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(0,"utf8")).isDraft)')"
+	[ "$draft" = false ] || fail "$release_tag is still a draft"
+	case "$prerelease" in
+		true|false) ;;
+		*) fail "could not determine release state for $release_tag" ;;
+	esac
 	tag_commit="$(git -C "$REPO_ROOT" rev-parse "$release_tag^{}")"
+	align_main_for_promotion "$tag_commit"
+
+	promotion_temp="$(make_managed_temp_dir "promote-${release_tag#v}")"
+	cleanup_promotion_temp() {
+		rm -rf -- "$promotion_temp"
+	}
+	trap cleanup_promotion_temp EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+	local TMPDIR="$promotion_temp"
+	export TMPDIR
 	temp_manifest="$(mktemp)"
 	manifest_from_ref "$release_tag" "$temp_manifest"
 	cli_version="$(json_get "$temp_manifest" upstream.cliVersion)"
@@ -693,7 +854,6 @@ promote_release() {
 
 	asset_dir="$(mktemp -d)"
 	(
-		trap 'rm -rf "$asset_dir"' EXIT
 		asset_base="https://github.com/$GITHUB_REPO/releases/download/$release_tag"
 		archive_name="cline-termux-aarch64-$release_tag.tar.gz"
 		info "Downloading published candidate assets for verification..."
@@ -711,21 +871,43 @@ promote_release() {
 	)
 	ok "Published candidate assets are intact"
 
-	previous_release="$(json_get "$MANIFEST" termux.releaseTag)"
-	git -C "$REPO_ROOT" merge --ff-only "$tag_commit"
-	git -C "$REPO_ROOT" push origin main
-	gh release edit "$release_tag" --repo "$GITHUB_REPO" --prerelease=false --latest
-
-	local latest_url="https://github.com/$GITHUB_REPO/releases/latest/download/install-cline-termux.sh"
-	local remote_test="~/tmp/test-installed-latest.sh"
-	if ! install_release_on_host "$host" "$latest_url" \
-		|| ! scp -q "$SCRIPT_DIR/test-installed-termux.sh" "$host:$remote_test" \
-		|| ! ssh "$host" "bash $remote_test '$release_tag' '$cli_version'"; then
-		warn "latest-URL smoke failed; restoring $previous_release as Latest"
-		gh release edit "$previous_release" --repo "$GITHUB_REPO" --latest
-		fail "promotion smoke failed"
+	previous_latest="$(latest_release_tag)" \
+		|| fail "could not determine the current GitHub Latest release"
+	fallback_release="$(previous_candidate_release "$tag_commit" || true)"
+	rollback_release="$previous_latest"
+	if [ "$rollback_release" = "$release_tag" ]; then
+		rollback_release="$fallback_release"
 	fi
 
+	if [ "$(git -C "$REPO_ROOT" rev-parse HEAD)" != "$tag_commit" ]; then
+		git -C "$REPO_ROOT" merge --ff-only "$tag_commit"
+	fi
+	if [ "$(git -C "$REPO_ROOT" rev-parse origin/main)" != "$tag_commit" ]; then
+		git -C "$REPO_ROOT" push origin main
+	fi
+
+	if [ "$prerelease" = true ] || [ "$previous_latest" != "$release_tag" ]; then
+		changed_release_state=true
+		if ! gh release edit "$release_tag" --repo "$GITHUB_REPO" --prerelease=false --latest; then
+			restore_failed_promotion "$release_tag" "$rollback_release" "$prerelease"
+			fail "could not publish $release_tag as stable/latest; main remains resumable at the candidate"
+		fi
+	else
+		info "$release_tag is already stable and GitHub Latest; verifying it again"
+	fi
+
+	if ! wait_for_latest_release "$release_tag" \
+		|| ! retry_latest_acceptance "$host" "$release_tag" "$cli_version"; then
+		if [ "$changed_release_state" = true ]; then
+			restore_failed_promotion "$release_tag" "$rollback_release" "$prerelease"
+		else
+			warn "$release_tag was already stable/latest, so its public state was left unchanged"
+		fi
+		fail "promotion acceptance failed; main remains at the candidate and this command can be rerun safely"
+	fi
+
+	cleanup_promotion_temp
+	trap - EXIT INT TERM
 	ok "$release_tag is stable, latest, and installed from the canonical latest URL"
 	echo "The final release check is now the clean install/update on termux_wifi_s7."
 }

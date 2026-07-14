@@ -65,17 +65,24 @@ bash release/manage.sh candidate cli-v3.0.30
 
 The candidate command:
 
-1. creates an isolated Git worktree from `main`
-2. merges one upstream CLI tag
-3. resolves only allowlisted metadata conflicts
-4. installs with upstream's exact Bun version
-5. tests the release-manager download safeguards
-6. runs SDK build, CLI unit tests, typecheck, CLI build, and official TUI tests
-7. creates a deterministic Android ARM64 archive
-8. tests the unpublished archive in a Termux sandbox on the S25 Ultra
-9. pushes the final tag and creates a public GitHub prerelease
-10. installs that exact release URL on the S25 Ultra
-11. runs version, help, FFI `dlopen`, and a visible-frame TUI check
+1. verifies that the manager staging filesystem has at least 4 GiB free
+2. creates an isolated Git worktree and disposable temporary directory
+3. merges one upstream CLI tag
+4. resolves only allowlisted metadata conflicts
+5. installs with upstream's exact Bun version
+6. tests the release-manager download safeguards
+7. runs SDK build, CLI unit tests, typecheck, CLI build, and official TUI tests
+8. creates a deterministic Android ARM64 archive
+9. tests the unpublished archive in a Termux sandbox on the S25 Ultra
+10. pushes the final tag and creates a public GitHub prerelease
+11. installs that exact release URL on the S25 Ultra
+12. runs version, help, FFI `dlopen`, and a visible-frame TUI check
+
+The official TUI suite creates many isolated Cline homes without removing them.
+The manager points `TMPDIR` at its own ignored `release/staging/` run directory
+and removes the entire directory on success, failure, or interruption. Override
+the location with `CLINE_TERMUX_MANAGER_TEMP_ROOT` or the required reserve with
+`CLINE_TERMUX_MIN_TEMP_MIB` when necessary.
 
 Nothing is pushed before the source and unpublished-package gates pass. The
 candidate tag uses the final release name, such as `v3.0.30-termux.1`, so the
@@ -101,10 +108,13 @@ bash release/manage.sh promote \
 
 Promotion downloads the published assets with bounded retries, verifies the
 archive checksum and installer against the tagged source, fast-forwards `main`,
-and marks the unchanged prerelease stable/latest. It then downloads and runs the
-canonical `releases/latest` installer as separate steps so a transport failure
-cannot be masked by a shell pipeline. The final release check is an
-install/update from that stable URL on the S7+.
+and marks the unchanged prerelease stable/latest. It waits until GitHub's Latest
+API resolves to the new tag, then retries the complete canonical
+`releases/latest` install and device acceptance sequence. A partially completed
+promotion can be rerun with the same command; it validates and converges local
+`main`, `origin/main`, and GitHub release state without rebuilding or replacing
+assets. The final release check is an install/update from that stable URL on the
+S7+.
 
 There is deliberately no range mode. If several upstream tags are pending, the
 entire candidate/manual/promote/device cycle is completed for each tag before
@@ -140,7 +150,9 @@ smoke before reporting success.
 - Never replace assets attached to a published tag.
 - A failed candidate receives the next downstream revision, such as
   `v3.0.30-termux.2`.
-- If the post-promotion latest-URL check fails, restore the previous release as
-  GitHub's Latest release and investigate before continuing.
+- If every post-promotion latest-URL attempt fails, the manager restores the
+  previous GitHub Latest release and restores the candidate's prerelease state.
+  `main` remains fast-forwarded to the immutable candidate so the same promotion
+  command can resume safely after the transport or device problem is fixed.
 - Do not advance to the next upstream CLI tag until the current stable release
   passes on both physical devices.
