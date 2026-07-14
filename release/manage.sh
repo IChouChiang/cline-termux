@@ -317,6 +317,44 @@ ensure_gitleaks() {
 	printf '%s\n' "$tool_path"
 }
 
+ensure_patchelf() {
+	local version="$1"
+	local machine archive_name expected_checksum tool_dir tool_path actual_checksum
+	machine="$(uname -m)"
+	case "$machine" in
+		x86_64)
+			archive_name="patchelf-$version-x86_64.tar.gz"
+			expected_checksum="$(json_get "$MANIFEST" toolchain.patchelf.linuxX64Sha256)"
+			;;
+		aarch64|arm64)
+			archive_name="patchelf-$version-aarch64.tar.gz"
+			expected_checksum="$(json_get "$MANIFEST" toolchain.patchelf.linuxArm64Sha256)"
+			;;
+		*) fail "unsupported patchelf host architecture: $machine" ;;
+	esac
+	tool_dir="$TOOLS_ROOT/patchelf-$version"
+	tool_path="$tool_dir/extracted/bin/patchelf"
+	if [ ! -x "$tool_path" ] \
+		|| [ "$($tool_path --version 2>/dev/null | awk '{ print $2 }')" != "$version" ]; then
+		mkdir -p "$tool_dir/extracted"
+		info "Downloading patchelf $version for OpenTUI Android compatibility..." >&2
+		gh release download "$version" \
+			--repo NixOS/patchelf \
+			--pattern "$archive_name" \
+			--dir "$tool_dir" \
+			--clobber
+		actual_checksum="$(sha256sum "$tool_dir/$archive_name" | awk '{ print $1 }')"
+		[ "$actual_checksum" = "$expected_checksum" ] || fail "patchelf archive checksum mismatch"
+		rm -rf "$tool_dir/extracted"
+		mkdir -p "$tool_dir/extracted"
+		tar xzf "$tool_dir/$archive_name" -C "$tool_dir/extracted"
+		chmod +x "$tool_path"
+	fi
+	[ "$($tool_path --version | awk '{ print $2 }')" = "$version" ] \
+		|| fail "could not provision patchelf $version"
+	printf '%s\n' "$tool_path"
+}
+
 run_gate() {
 	local log_dir="$1"
 	local name="$2"
@@ -450,7 +488,8 @@ candidate_release() {
 	inspect_release "$target_tag"
 
 	local target_commit cli_version release_tag release_name branch worktree candidate_dir
-	local bun_version bun_bin gitleaks_version gitleaks_bin log_dir merge_status candidate_commit notes_file
+	local bun_version bun_bin gitleaks_version gitleaks_bin patchelf_version patchelf_bin
+	local log_dir merge_status candidate_commit notes_file
 	target_commit="$(git -C "$REPO_ROOT" rev-parse "$target_tag^{}")"
 	cli_version="$(git_json_get "$target_tag" apps/cli/package.json version)"
 	release_tag="v$cli_version-termux.$revision"
@@ -465,6 +504,8 @@ candidate_release() {
 	bun_bin="$(ensure_pinned_bun "$bun_version")"
 	gitleaks_version="$(json_get "$MANIFEST" toolchain.gitleaks)"
 	gitleaks_bin="$(ensure_gitleaks "$gitleaks_version")"
+	patchelf_version="$(json_get "$MANIFEST" toolchain.patchelf.version)"
+	patchelf_bin="$(ensure_patchelf "$patchelf_version")"
 	branch="termux-candidate-${release_tag#v}"
 	worktree="$WORK_ROOT/$release_tag"
 	candidate_dir="$CANDIDATE_ROOT/$release_tag"
@@ -480,10 +521,12 @@ candidate_release() {
 	git -C "$REPO_ROOT" worktree add -q -b "$branch" "$worktree" main
 
 	cleanup_candidate_worktree() {
-		git -C "$REPO_ROOT" worktree remove --force "$worktree" >/dev/null 2>&1 || true
-		git -C "$REPO_ROOT" branch -D "$branch" >/dev/null 2>&1 || true
+		local cleanup_worktree="$1"
+		local cleanup_branch="$2"
+		git -C "$REPO_ROOT" worktree remove --force "$cleanup_worktree" >/dev/null 2>&1 || true
+		git -C "$REPO_ROOT" branch -D "$cleanup_branch" >/dev/null 2>&1 || true
 	}
-	trap cleanup_candidate_worktree EXIT
+	trap "cleanup_candidate_worktree '$worktree' '$branch'" EXIT
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
 
@@ -522,6 +565,7 @@ candidate_release() {
 	candidate_commit="$(git -C "$worktree" rev-parse HEAD)"
 	CLINE_TERMUX_DIST_DIR="$candidate_dir" \
 		BUN_BIN="$bun_bin" \
+		PATCHELF_BIN="$patchelf_bin" \
 		bash "$worktree/release/build-termux-release.sh" \
 			--release "$release_tag" --skip-build
 	cp "$worktree/release/install-cline-termux.sh" "$candidate_dir/install-cline-termux.sh"
@@ -552,7 +596,7 @@ candidate_release() {
 		--notes-file "$notes_file"
 	install_published_candidate "$host" "$release_tag" "$cli_version"
 
-	cleanup_candidate_worktree
+	cleanup_candidate_worktree "$worktree" "$branch"
 	trap - EXIT INT TERM
 	echo
 	ok "$release_tag is installed on $host and ready for manual testing"

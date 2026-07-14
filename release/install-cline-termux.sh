@@ -434,10 +434,14 @@ smoke_test() {
 		warn "cline --help returned non-zero"
 	fi
 
-	(
+	if (
 		cd "$INSTALL_BASE/current"
 		"$bun_bin" -e 'import { dlopen } from "bun:ffi"; const lib = dlopen("./node_modules/@opentui/core-android-arm64/libopentui.so", { createRenderer: { args: ["u32", "u32", "bool", "bool"], returns: "ptr" } }); if (!lib.symbols.createRenderer) process.exit(1); console.log("opentui-dlopen-ok")' >/dev/null
-	) && ok "OpenTUI native dlopen works"
+	); then
+		ok "OpenTUI native dlopen works"
+	else
+		die "OpenTUI native dlopen failed."
+	fi
 }
 
 info "Checking environment..."

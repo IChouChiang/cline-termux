@@ -8,6 +8,7 @@ CLI_DIR="$REPO_ROOT/apps/cli"
 DIST_DIR="${CLINE_TERMUX_DIST_DIR:-$SCRIPT_DIR/dist}"
 STAGING_DIR="${CLINE_TERMUX_STAGING_DIR:-$SCRIPT_DIR/staging}"
 BUN_BIN="${BUN_BIN:-bun}"
+PATCHELF_BIN="${PATCHELF_BIN:-patchelf}"
 RELEASE_VERSION="${CLINE_TERMUX_RELEASE_VERSION:-}"
 SKIP_BUILD=false
 KEEP_STAGING=false
@@ -115,6 +116,8 @@ command -v gzip >/dev/null 2>&1 || fail "gzip is required"
 command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
 command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 [ -x "$BUN_BIN" ] || command -v "$BUN_BIN" >/dev/null 2>&1 || fail "Bun is required: $BUN_BIN"
+[ -x "$PATCHELF_BIN" ] || command -v "$PATCHELF_BIN" >/dev/null 2>&1 \
+	|| fail "patchelf is required: $PATCHELF_BIN"
 
 if [ "$SKIP_BUILD" = false ]; then
 	info "Building @cline/cli with $BUN_BIN..."
@@ -164,6 +167,13 @@ rg -q 'getDialogVerticalAlign' "$STAGE_DIR/node_modules/@opentui-ui/dialog/dist"
 patch_android_alias_package_json \
 	"$STAGE_DIR/node_modules/@opentui/core-android-arm64/package.json"
 rm -rf "$STAGE_DIR/node_modules/@opentui/core-linux-arm64"
+OPENTUI_LIB="$STAGE_DIR/node_modules/@opentui/core-android-arm64/libopentui.so"
+if ! "$PATCHELF_BIN" --print-needed "$OPENTUI_LIB" | grep -Fxq libc.so; then
+	info "Adding the Android libc dependency to libopentui.so..."
+	"$PATCHELF_BIN" --add-needed libc.so "$OPENTUI_LIB"
+fi
+"$PATCHELF_BIN" --print-needed "$OPENTUI_LIB" | grep -Fxq libc.so \
+	|| fail "libopentui.so is missing its Android libc dependency"
 
 printf '%s\n' \
 	"release=$RELEASE_VERSION" \

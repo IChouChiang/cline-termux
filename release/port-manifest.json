@@ -17,7 +17,12 @@
   "toolchain": {
     "bun": "1.3.13",
     "node": ">=22",
-    "gitleaks": "8.30.1"
+    "gitleaks": "8.30.1",
+    "patchelf": {
+      "version": "0.19.1",
+      "linuxX64Sha256": "a6818fef80128fb354423234ecacdcca3e993913d774e5d8346bc63f70fed4cf",
+      "linuxArm64Sha256": "a2f8f5add5910a521d35062adf2c9f55d75b65ae5508d290758787004054e702"
+    }
   },
   "bunFfi": {
     "repository": "IChouChiang/bun-android-ffi",
@@ -28,7 +33,8 @@
     "core": "0.1.102",
     "react": "0.1.102",
     "dialog": "0.1.2",
-    "dialogPatch": "patches/@opentui-ui%2Fdialog@0.1.2.patch"
+    "dialogPatch": "patches/@opentui-ui%2Fdialog@0.1.2.patch",
+    "nativeCompatibility": "add DT_NEEDED libc.so to libopentui.so"
   },
   "merge": {
     "allowedConflictPaths": [

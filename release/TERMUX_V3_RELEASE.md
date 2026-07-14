@@ -27,11 +27,17 @@ The Cline archive is built from:
 - the repository `bun.lock`
 - the Bun version pinned by upstream Cline
 - the committed OpenTUI dialog patch
+- a pinned `patchelf` step that adds `DT_NEEDED libc.so` to `libopentui.so`
 - the published Bun Android FFI artifact
 
 A phone is a test target, not a build input. Runtime dependencies are resolved
 for Linux ARM64 on the workstation, and `@opentui/core-linux-arm64` is installed
 under the Android package alias expected by OpenTUI.
+
+The upstream Linux ARM64 OpenTUI ELF does not declare `libc.so` as a needed
+library. Android's linker consequently cannot resolve `getauxval` when Bun
+loads it directly. The builder adds that dependency deterministically and the
+phone gate verifies a real `dlopen()` before publication.
 
 ## Managed Flow
 
