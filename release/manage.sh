@@ -325,6 +325,31 @@ run_gate() {
 	"$@" 2>&1 | tee "$log_dir/$name.log"
 }
 
+install_worktree_dependencies() {
+	local worktree="$1"
+	local bun_bin="$2"
+	local log_file="$3"
+	local attempt
+	for attempt in 1 2 3; do
+		info "Installing locked dependencies (attempt $attempt/3)..."
+		if (
+			cd "$worktree"
+			timeout --foreground 300 "$bun_bin" install \
+				--ignore-scripts \
+				--network-concurrency 8
+		) 2>&1 | tee -a "$log_file"; then
+			(
+				cd "$worktree"
+				"$bun_bin" install --frozen-lockfile --ignore-scripts
+			)
+			return 0
+		fi
+		warn "dependency install attempt $attempt failed; retrying partial downloads"
+		sleep "$((attempt * 2))"
+	done
+	fail "dependency installation failed after three bounded attempts"
+}
+
 resolve_expected_conflicts() {
 	local worktree="$1"
 	local target_commit="$2"
@@ -414,7 +439,7 @@ candidate_release() {
 		''|*[!0-9]*) fail "--revision must be a positive integer" ;;
 	esac
 	[ "$revision" -gt 0 ] || fail "--revision must be a positive integer"
-	for required in curl gh scp sha256sum ssh unzip; do
+	for required in curl gh scp sha256sum ssh timeout unzip; do
 		require_command "$required"
 	done
 
@@ -445,15 +470,22 @@ candidate_release() {
 	candidate_dir="$CANDIDATE_ROOT/$release_tag"
 	log_dir="$candidate_dir/logs"
 	mkdir -p "$WORK_ROOT" "$log_dir"
+	if git -C "$REPO_ROOT" worktree list --porcelain \
+		| grep -Fxq "worktree $worktree"; then
+		git -C "$REPO_ROOT" worktree remove --force "$worktree"
+	fi
 	git -C "$REPO_ROOT" branch -D "$branch" >/dev/null 2>&1 || true
 	rm -rf "$worktree"
+	git -C "$REPO_ROOT" worktree prune
 	git -C "$REPO_ROOT" worktree add -q -b "$branch" "$worktree" main
 
 	cleanup_candidate_worktree() {
 		git -C "$REPO_ROOT" worktree remove --force "$worktree" >/dev/null 2>&1 || true
 		git -C "$REPO_ROOT" branch -D "$branch" >/dev/null 2>&1 || true
 	}
-	trap cleanup_candidate_worktree RETURN
+	trap cleanup_candidate_worktree EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
 
 	info "Merging $target_tag in isolated worktree..."
 	set +e
@@ -468,11 +500,8 @@ candidate_release() {
 
 	node "$worktree/release/port-metadata.mjs" update \
 		"$target_tag" "$target_commit" "$release_tag"
-	(
-		cd "$worktree"
-		"$bun_bin" install --ignore-scripts
-		"$bun_bin" install --frozen-lockfile --ignore-scripts
-	)
+	install_worktree_dependencies \
+		"$worktree" "$bun_bin" "$log_dir/dependency-install.log"
 	git -C "$worktree" add -A
 	[ -z "$(git -C "$worktree" diff --name-only --diff-filter=U)" ] \
 		|| fail "unresolved merge conflicts remain"
@@ -523,8 +552,8 @@ candidate_release() {
 		--notes-file "$notes_file"
 	install_published_candidate "$host" "$release_tag" "$cli_version"
 
-	trap - RETURN
 	cleanup_candidate_worktree
+	trap - EXIT INT TERM
 	echo
 	ok "$release_tag is installed on $host and ready for manual testing"
 	echo "Please test on the S25 Ultra:"
