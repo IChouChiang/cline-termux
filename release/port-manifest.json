@@ -16,7 +16,8 @@
   },
   "toolchain": {
     "bun": "1.3.13",
-    "node": ">=22"
+    "node": ">=22",
+    "gitleaks": "8.30.1"
   },
   "bunFfi": {
     "repository": "IChouChiang/bun-android-ffi",

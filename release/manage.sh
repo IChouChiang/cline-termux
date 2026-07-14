@@ -285,6 +285,38 @@ ensure_pinned_bun() {
 	printf '%s\n' "$bun_path"
 }
 
+ensure_gitleaks() {
+	local version="$1"
+	local machine archive_name tool_dir tool_path checksum_file expected actual
+	machine="$(uname -m)"
+	case "$machine" in
+		x86_64) archive_name="gitleaks_${version}_linux_x64.tar.gz" ;;
+		aarch64|arm64) archive_name="gitleaks_${version}_linux_arm64.tar.gz" ;;
+		*) fail "unsupported gitleaks host architecture: $machine" ;;
+	esac
+	tool_dir="$TOOLS_ROOT/gitleaks-$version"
+	tool_path="$tool_dir/gitleaks"
+	if [ ! -x "$tool_path" ] || [ "$($tool_path version 2>/dev/null || true)" != "$version" ]; then
+		mkdir -p "$tool_dir"
+		info "Downloading gitleaks $version for the repository commit hook..." >&2
+		gh release download "v$version" \
+			--repo gitleaks/gitleaks \
+			--pattern "$archive_name" \
+			--pattern "gitleaks_${version}_checksums.txt" \
+			--dir "$tool_dir" \
+			--clobber
+		checksum_file="$tool_dir/gitleaks_${version}_checksums.txt"
+		expected="$(awk -v name="$archive_name" '$2 == name { print $1 }' "$checksum_file")"
+		[ -n "$expected" ] || fail "gitleaks checksum list does not contain $archive_name"
+		actual="$(sha256sum "$tool_dir/$archive_name" | awk '{ print $1 }')"
+		[ "$actual" = "$expected" ] || fail "gitleaks archive checksum mismatch"
+		tar xzf "$tool_dir/$archive_name" -C "$tool_dir" gitleaks
+		chmod +x "$tool_path"
+	fi
+	[ "$($tool_path version)" = "$version" ] || fail "could not provision gitleaks $version"
+	printf '%s\n' "$tool_path"
+}
+
 run_gate() {
 	local log_dir="$1"
 	local name="$2"
@@ -393,7 +425,7 @@ candidate_release() {
 	inspect_release "$target_tag"
 
 	local target_commit cli_version release_tag release_name branch worktree candidate_dir
-	local bun_version bun_bin log_dir merge_status candidate_commit notes_file
+	local bun_version bun_bin gitleaks_version gitleaks_bin log_dir merge_status candidate_commit notes_file
 	target_commit="$(git -C "$REPO_ROOT" rev-parse "$target_tag^{}")"
 	cli_version="$(git_json_get "$target_tag" apps/cli/package.json version)"
 	release_tag="v$cli_version-termux.$revision"
@@ -406,6 +438,8 @@ candidate_release() {
 
 	bun_version="$(json_get "$MANIFEST" toolchain.bun)"
 	bun_bin="$(ensure_pinned_bun "$bun_version")"
+	gitleaks_version="$(json_get "$MANIFEST" toolchain.gitleaks)"
+	gitleaks_bin="$(ensure_gitleaks "$gitleaks_version")"
 	branch="termux-candidate-${release_tag#v}"
 	worktree="$WORK_ROOT/$release_tag"
 	candidate_dir="$CANDIDATE_ROOT/$release_tag"
@@ -454,7 +488,8 @@ candidate_release() {
 	run_gate "$log_dir" cli-tui \
 		bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli test:e2e:cli:tui"
 
-	git -C "$worktree" commit -m "chore(termux): update to cli v$cli_version"
+	PATH="$(dirname "$gitleaks_bin"):$PATH" \
+		git -C "$worktree" commit -m "chore(termux): update to cli v$cli_version"
 	candidate_commit="$(git -C "$worktree" rev-parse HEAD)"
 	CLINE_TERMUX_DIST_DIR="$candidate_dir" \
 		BUN_BIN="$bun_bin" \
