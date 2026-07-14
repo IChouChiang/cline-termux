@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "repository": "cline/cline",
+    "remote": "upstream",
+    "tag": "cli-v3.0.29",
+    "commit": "ee59f81706981e0a64c8b32f8f0415c9d39561fa",
+    "cliVersion": "3.0.29"
+  },
+  "termux": {
+    "releaseTag": "v3.0.29-termux.1",
+    "revision": 1,
+    "platform": "android",
+    "architecture": "aarch64",
+    "candidateHost": "termux_wifi"
+  },
+  "toolchain": {
+    "bun": "1.3.13",
+    "node": ">=22"
+  },
+  "bunFfi": {
+    "repository": "IChouChiang/bun-android-ffi",
+    "version": "1.4.0-canary.1-55f6c899f",
+    "asset": "bun-android-ffi-aarch64-v1.4.0-canary.1-55f6c899f.tar.gz"
+  },
+  "openTui": {
+    "core": "0.1.102",
+    "react": "0.1.102",
+    "dialog": "0.1.2",
+    "dialogPatch": "patches/@opentui-ui%2Fdialog@0.1.2.patch"
+  },
+  "merge": {
+    "allowedConflictPaths": [
+      "README.md",
+      "bun.lock",
+      "package.json"
+    ]
+  }
+}

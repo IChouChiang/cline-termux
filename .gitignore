@@ -61,6 +61,12 @@ tests/**/cache
 # Should never be committed: only exists if a publish aborts mid-swap.
 .README.github.bak
 
+# Local release-manager state and candidate artifacts
+/release/.tools/
+/release/.work/
+/release/candidates/
+/release/staging/
+
 # Tauri generated code
 apps/*/src-tauri/gen
 apps/*/src-tauri/bin

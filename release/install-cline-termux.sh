@@ -401,6 +401,7 @@ else
 	exit 1
 fi
 
+export CLINE_NO_AUTO_UPDATE="\${CLINE_NO_AUTO_UPDATE:-1}"
 exec "\$BUN_BIN" "\$CLINE_TERMUX_HOME/index.js" "\$@"
 LAUNCHER
 	chmod +x "$LAUNCHER_PATH"

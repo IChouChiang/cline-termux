@@ -1,223 +1,131 @@
 # Cline Termux V3 Release
 
-This release path packages Cline CLI `3.0.29` for native Termux Android
-aarch64. It deliberately separates the Cline app payload from the experimental
-Bun Android FFI runtime, so the public `cline` command can work without
-replacing the user's normal `$PREFIX/bin/bun`.
-
-Current status: the local two-artifact package installed and smoke-tested
-successfully on the refreshed F-Droid Termux phone. The Bun runtime repo and
-release asset are public; the Cline Termux release asset is still local.
-
-## Artifacts
-
-Two tarballs are required:
-
-| Artifact | Purpose |
-| --- | --- |
-| `bun-android-ffi-aarch64-v1.4.0-canary.1-55f6c899f.tar.gz` | Private Bun runtime with `bun:ffi dlopen()` enabled for Android |
-| `cline-termux-aarch64-v3.0.29-termux.1.tar.gz` | Cline CLI bundle plus Android OpenTUI runtime dependencies |
-
-Current local checksums:
-
-```text
-4faca366cb4e5404f3c08f1a1764e39eeb005f0ae5724c02f8090b8a93554a13  release/dist/bun-android-ffi-aarch64-v1.4.0-canary.1-55f6c899f.tar.gz
-48ffb825e97addce9c8f0ac6fc669e25e27e5242680281bbdcfd0058e5a4bc5e  release/dist/cline-termux-aarch64-v3.0.29-termux.1.tar.gz
-```
-
-The `release/dist/` directory is generated output and is ignored by git.
-
-## Install Layout
-
-The installer follows Termux prefix conventions while keeping this port
-self-contained:
-
-| Path | Purpose |
-| --- | --- |
-| `$PREFIX/opt/bun-android-ffi/<version>/` | Versioned private Bun FFI runtime |
-| `$PREFIX/opt/bun-android-ffi/current` | Symlink to the active Bun FFI runtime |
-| `$PREFIX/bin/bun-ffi` | Convenience symlink to the private Bun runtime |
-| `$PREFIX/opt/cline-termux/<release>/` | Versioned Cline Termux runtime payload |
-| `$PREFIX/opt/cline-termux/current` | Symlink to the active Cline release |
-| `$PREFIX/bin/cline` | User-facing Cline launcher |
-| `~/.cline/` | Official Cline user data, settings, tasks, and API keys |
-
-There is intentionally no public `cline-tui` launcher. Users keep the official
-command habit:
-
-```sh
-cline
-cline --tui
-```
-
-The generated `$PREFIX/bin/cline` launcher runs:
-
-```text
-$PREFIX/opt/bun-android-ffi/current/bun
-$PREFIX/opt/cline-termux/current/index.js
-```
-
-It never falls back to official Bun, because official Bun Android currently
-starts JavaScript but fails the real OpenTUI `bun:ffi dlopen()` path.
-
-## Build Locally
-
-Build the private Bun FFI runtime tarball from the local Bun fork:
-
-```sh
-bash release/build-bun-ffi-release.sh
-```
-
-Expected output:
-
-```text
-release/dist/bun-android-ffi-aarch64-v1.4.0-canary.1-55f6c899f.tar.gz
-release/dist/bun-android-ffi-aarch64-v1.4.0-canary.1-55f6c899f.tar.gz.sha256
-```
-
-Build the Cline Termux tarball from the current repo bundle and a known-good
-Android runtime dependency tree:
-
-```sh
-bash release/build-termux-release.sh \
-  --termux-host termux_wifi \
-  --runtime-dir '~/cline-v3' \
-  --release v3.0.29-termux.1
-```
-
-If `apps/cli/dist` is already current:
-
-```sh
-bash release/build-termux-release.sh \
-  --skip-build \
-  --termux-host termux_wifi \
-  --runtime-dir '~/cline-v3' \
-  --release v3.0.29-termux.1
-```
-
-Expected output:
-
-```text
-release/dist/cline-termux-aarch64-v3.0.29-termux.1.tar.gz
-release/dist/cline-termux-aarch64-v3.0.29-termux.1.tar.gz.sha256
-```
-
-## Test On Termux
-
-Sandbox test from local tarballs:
-
-```sh
-bash release/test-termux-install.sh \
-  --from-tarball cline-termux-aarch64-v3.0.29-termux.1.tar.gz \
-  --bun-tarball bun-android-ffi-aarch64-v1.4.0-canary.1-55f6c899f.tar.gz
-```
-
-Real install from extracted tarball:
-
-```sh
-tar xzf cline-termux-aarch64-v3.0.29-termux.1.tar.gz
-cd cline-termux-aarch64-v3.0.29-termux.1
-bash install.sh --force
-```
-
-The installer smoke test checks:
-
-```text
-bun-ffi --version
-cline --version
-cline --help
-OpenTUI native dlopen with createRenderer
-```
-
-The important smoke is the `dlopen()` check. Importing `bun:ffi` alone is not
-enough, because official Bun Android can import the module while still failing
-with TinyCC disabled when `dlopen()` is called.
-
-## Published Install Command
-
-After both GitHub releases exist, the intended one-command install is:
-
-```sh
-curl -fsSL https://github.com/IChouChiang/cline-termux/releases/latest/download/install-cline-termux.sh | bash
-```
-
-Useful environment overrides:
-
-```sh
-CLINE_TERMUX_VERSION=v3.0.29-termux.1
-CLINE_TERMUX_GITHUB_REPO=IChouChiang/cline-termux
-CLINE_TERMUX_BUN_FFI_REPO=IChouChiang/bun-android-ffi
-CLINE_TERMUX_BUN_FFI_VERSION=1.4.0-canary.1-55f6c899f
-CLINE_TUI_TERMUX_DIALOG_SAFE_AREA_BOTTOM=15%
-CLINE_TUI_TERMUX_MOUSE=off
-```
-
-## Publish Order
-
-The Bun runtime has already been published:
-
-```text
-https://github.com/IChouChiang/bun-android-ffi
-https://github.com/IChouChiang/bun-android-ffi/releases/tag/v1.4.0-canary.1-55f6c899f
-```
-
-That repo is intentionally a tiny artifact/patch repo, not a full Bun source
-mirror. It includes the Bun license notice and `patches/bun-android-ffi.patch`
-for the downstream Android FFI source changes.
-
-Original publish command:
-
-```sh
-gh release create v1.4.0-canary.1-55f6c899f \
-  release/dist/bun-android-ffi-aarch64-v1.4.0-canary.1-55f6c899f.tar.gz \
-  release/dist/bun-android-ffi-aarch64-v1.4.0-canary.1-55f6c899f.tar.gz.sha256 \
-  --repo IChouChiang/bun-android-ffi \
-  --title "Bun Android FFI v1.4.0-canary.1-55f6c899f"
-```
-
-Next, publish Cline:
-
-```sh
-gh release create v3.0.29-termux.1 \
-  release/dist/cline-termux-aarch64-v3.0.29-termux.1.tar.gz \
-  release/dist/cline-termux-aarch64-v3.0.29-termux.1.tar.gz.sha256 \
-  release/install-cline-termux.sh \
-  --repo IChouChiang/cline-termux \
-  --title "Cline Termux v3.0.29-termux.1"
-```
-
-After publishing, test the public path on a clean Termux install:
-
-```sh
-curl -fsSL https://github.com/IChouChiang/cline-termux/releases/latest/download/install-cline-termux.sh | bash
-cline --version
-cline --help
-cline --tui
-```
-
-## Fresh Termux Verification
-
-The refreshed F-Droid Termux phone passed both:
-
-```text
-release/test-termux-install.sh with both local tarballs
-real install.sh from the extracted Cline tarball
-```
-
-Device:
-
-```text
-Model: SM-S9380
-Android: 16
-Termux: 0.118.3 F-Droid
-Arch: aarch64
-```
-
-Post-install layout:
+The release system packages one upstream Cline CLI tag at a time for native
+Termux on Android `aarch64`. Cline, its private Bun FFI runtime, and user data
+remain separate:
 
 ```text
 $PREFIX/bin/cline
-$PREFIX/bin/bun-ffi -> $PREFIX/opt/bun-android-ffi/current/bun
-$PREFIX/opt/bun-android-ffi/current -> .../1.4.0-canary.1-55f6c899f
-$PREFIX/opt/cline-termux/current -> .../3.0.29-termux.1
+$PREFIX/opt/cline-termux/<release>
+$PREFIX/opt/bun-android-ffi/<version>
+~/.cline
 ```
+
+The launcher sets `CLINE_NO_AUTO_UPDATE=1` by default. Updates are owned by this
+release process because an official CLI update would not include the Termux
+runtime and UX patches.
+
+## Release Inputs
+
+`release/port-manifest.json` records the maintained upstream tag and commit,
+the Termux release, pinned build toolchain, Bun FFI artifact, OpenTUI versions,
+dialog patch, and the small allowlist of expected merge conflicts.
+
+The Cline archive is built from:
+
+- the committed Cline/OpenTUI source tree
+- the repository `bun.lock`
+- the Bun version pinned by upstream Cline
+- the committed OpenTUI dialog patch
+- the published Bun Android FFI artifact
+
+A phone is a test target, not a build input. Runtime dependencies are resolved
+for Linux ARM64 on the workstation, and `@opentui/core-linux-arm64` is installed
+under the Android package alias expected by OpenTUI.
+
+## Managed Flow
+
+Inspect exactly the next stable CLI release:
+
+```sh
+bash release/manage.sh inspect cli-v3.0.30
+```
+
+The inspection verifies sequential versioning, ancestry, Bun/Node/OpenTUI pins,
+downstream/upstream path overlap, and simulated merge conflicts. Toolchain or
+OpenTUI changes stop automation for manual review.
+
+Prepare and publish a candidate:
+
+```sh
+bash release/manage.sh candidate cli-v3.0.30
+```
+
+The candidate command:
+
+1. creates an isolated Git worktree from `main`
+2. merges one upstream CLI tag
+3. resolves only allowlisted metadata conflicts
+4. installs with upstream's exact Bun version
+5. runs SDK build, CLI unit tests, typecheck, CLI build, and official TUI tests
+6. creates a deterministic Android ARM64 archive
+7. tests the unpublished archive in a Termux sandbox on the S25 Ultra
+8. pushes the final tag and creates a public GitHub prerelease
+9. installs that exact release URL on the S25 Ultra
+10. runs version, help, FFI `dlopen`, and pseudo-terminal TUI checks
+
+Nothing is pushed before the source and unpublished-package gates pass. The
+candidate tag uses the final release name, such as `v3.0.30-termux.1`, so the
+same immutable assets can later be promoted without rebuilding.
+
+## Manual Candidate Test
+
+On the S25 Ultra:
+
+1. launch `cline --tui`
+2. tap the input box and confirm the IME opens
+3. finger-scroll the transcript
+4. open `/settings`, `/model`, and `/history` with the IME visible
+5. send one real prompt and complete a short conversation
+
+Promote only after those checks pass:
+
+```sh
+bash release/manage.sh promote \
+  v3.0.30-termux.1 \
+  --confirm-manual-test
+```
+
+Promotion verifies the published checksum, fast-forwards `main`, marks the
+unchanged prerelease stable/latest, and tests the canonical `releases/latest`
+installer URL. The final release check is an install/update from that stable URL
+on the S7+.
+
+There is deliberately no range mode. If several upstream tags are pending, the
+entire candidate/manual/promote/device cycle is completed for each tag before
+the next inspection.
+
+## Manual Builder
+
+The manager normally owns packaging. For diagnostics, build directly with:
+
+```sh
+bash release/build-termux-release.sh \
+  --release v3.0.30-termux.1
+```
+
+Use `--skip-build` only when `apps/cli/dist` was built from the current commit.
+The archive and checksum are written to `release/dist/`, which is ignored by
+Git.
+
+## Public Install
+
+Stable users install or update with:
+
+```sh
+curl -fsSL https://github.com/IChouChiang/cline-termux/releases/latest/download/install-cline-termux.sh | bash
+```
+
+The installer checks the Cline archive checksum, keeps versioned directories,
+updates the `current` symlink atomically, and runs a native OpenTUI `dlopen()`
+smoke before reporting success.
+
+## Recovery Rules
+
+- Never replace assets attached to a published tag.
+- A failed candidate receives the next downstream revision, such as
+  `v3.0.30-termux.2`.
+- If the post-promotion latest-URL check fails, restore the previous release as
+  GitHub's Latest release and investigate before continuing.
+- Do not advance to the next upstream CLI tag until the current stable release
+  passes on both physical devices.

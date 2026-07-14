@@ -117,6 +117,22 @@ bun-ffi --version
 The installer also runs a native OpenTUI `dlopen()` smoke test before reporting
 success.
 
+## Maintainer Flow
+
+Each stable upstream CLI tag is handled independently:
+
+```sh
+bash release/manage.sh inspect cli-v3.0.30
+bash release/manage.sh candidate cli-v3.0.30
+bash release/manage.sh promote v3.0.30-termux.1 --confirm-manual-test
+```
+
+`candidate` builds once, runs the upstream CLI unit and TUI suites, tests the
+unpublished archive on Termux, publishes a prerelease, and installs that exact
+tag on the S25 Ultra. `promote` only changes release state after the manual
+touch/IME test; it does not rebuild or replace release assets. The manager has
+no range mode, so an upstream CLI release cannot be skipped accidentally.
+
 ## Uninstall
 
 ```sh

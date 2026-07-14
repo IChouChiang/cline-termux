@@ -5,10 +5,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CLI_DIR="$REPO_ROOT/apps/cli"
-DIST_DIR="$SCRIPT_DIR/dist"
-STAGING_DIR="$SCRIPT_DIR/staging"
-TERMUX_HOST="${TERMUX_HOST:-termux_wifi}"
-TERMUX_RUNTIME_DIR="${TERMUX_RUNTIME_DIR:-~/cline-v3}"
+DIST_DIR="${CLINE_TERMUX_DIST_DIR:-$SCRIPT_DIR/dist}"
+STAGING_DIR="${CLINE_TERMUX_STAGING_DIR:-$SCRIPT_DIR/staging}"
+BUN_BIN="${BUN_BIN:-bun}"
 RELEASE_VERSION="${CLINE_TERMUX_RELEASE_VERSION:-}"
 SKIP_BUILD=false
 KEEP_STAGING=false
@@ -30,31 +29,20 @@ usage() {
 	cat <<EOF
 Usage: bash release/build-termux-release.sh [options]
 
-Builds a Cline Termux release tarball from the current repo bundle and a
-tested Termux Android/ARM64 runtime dependency tree.
+Builds a deterministic Cline Termux Android/ARM64 release tarball. Runtime
+dependencies are resolved locally from the repository lockfile; a phone is not
+used as a build input.
 
 Options:
-  --termux-host HOST     SSH host that can read the Termux runtime (default: $TERMUX_HOST)
-  --runtime-dir DIR      Runtime dir on HOST containing node_modules (default: $TERMUX_RUNTIME_DIR)
-  --release VERSION      Release version/tag, for example v3.0.29-termux.1
-  --skip-build           Use existing apps/cli/dist instead of rebuilding
-  --keep-staging         Keep release/staging after the tarball is produced
-  -h, --help             Show this help
+  --release VERSION  Release version/tag, for example v3.0.30-termux.1
+  --skip-build       Use existing apps/cli/dist instead of rebuilding
+  --keep-staging     Keep release/staging after the tarball is produced
+  -h, --help         Show this help
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
-		--termux-host)
-			[ -n "${2:-}" ] || fail "--termux-host requires a value"
-			TERMUX_HOST="$2"
-			shift 2
-			;;
-		--runtime-dir)
-			[ -n "${2:-}" ] || fail "--runtime-dir requires a value"
-			TERMUX_RUNTIME_DIR="$2"
-			shift 2
-			;;
 		--release)
 			[ -n "${2:-}" ] || fail "--release requires a value"
 			RELEASE_VERSION="$2"
@@ -86,19 +74,11 @@ normalize_version() {
 }
 
 json_field() {
-	node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); console.log(data[process.argv[2]])" "$1" "$2"
-}
-
-copy_dir() {
-	local src="$1"
-	local dst="$2"
-	rm -rf "$dst"
-	mkdir -p "$(dirname "$dst")"
-	cp -R "$src" "$dst"
+	node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log(process.argv[2].split(".").reduce((value, key) => value[key], data))' "$1" "$2"
 }
 
 patch_android_alias_package_json() {
-	local pkg_json="$1"
+	local package_json="$1"
 	node -e '
 const fs = require("fs")
 const file = process.argv[1]
@@ -108,7 +88,7 @@ pkg.description = "Prebuilt android-arm64 binaries for @opentui/core"
 pkg.os = ["android"]
 pkg.cpu = ["arm64"]
 fs.writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`)
-' "$pkg_json"
+' "$package_json"
 }
 
 CLINE_VERSION="$(json_field "$CLI_DIR/package.json" version)"
@@ -119,27 +99,28 @@ RELEASE_VERSION="$(normalize_version "$RELEASE_VERSION")"
 RELEASE_TAG="v$RELEASE_VERSION"
 RELEASE_NAME="cline-termux-aarch64-v$RELEASE_VERSION"
 STAGE_DIR="$STAGING_DIR/$RELEASE_NAME"
-SOURCE_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-UPSTREAM_TAG="$(git -C "$REPO_ROOT" describe --tags --match 'cli-v*' --abbrev=0 2>/dev/null || echo unknown)"
+SOURCE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+UPSTREAM_TAG="$(json_field "$SCRIPT_DIR/port-manifest.json" upstream.tag)"
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$REPO_ROOT" show -s --format=%ct HEAD)}"
+BUILT_AT="$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
 
 case "$RELEASE_VERSION" in
-	"$CLINE_VERSION"-termux.*)
-		;;
-	*)
-		fail "release version '$RELEASE_VERSION' should begin with '$CLINE_VERSION-termux.'"
-		;;
+	"$CLINE_VERSION"-termux.*) ;;
+	*) fail "release version '$RELEASE_VERSION' should begin with '$CLINE_VERSION-termux.'" ;;
 esac
 
 command -v node >/dev/null 2>&1 || fail "node is required"
-command -v rsync >/dev/null 2>&1 || fail "rsync is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
+command -v gzip >/dev/null 2>&1 || fail "gzip is required"
 command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
+command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
+[ -x "$BUN_BIN" ] || command -v "$BUN_BIN" >/dev/null 2>&1 || fail "Bun is required: $BUN_BIN"
 
 if [ "$SKIP_BUILD" = false ]; then
-	info "Building @cline/cli..."
+	info "Building @cline/cli with $BUN_BIN..."
 	(
 		cd "$REPO_ROOT"
-		PATH="$HOME/.bun/bin:$PATH" bun -F @cline/cli build
+		"$BUN_BIN" -F @cline/cli build
 	)
 fi
 
@@ -147,91 +128,69 @@ fi
 [ -d "$CLI_DIR/dist/extensions" ] || fail "missing $CLI_DIR/dist/extensions"
 [ -d "$CLI_DIR/dist/cline-hub" ] || fail "missing $CLI_DIR/dist/cline-hub"
 
-info "Checking Termux runtime on $TERMUX_HOST..."
-ssh -o ConnectTimeout=8 "$TERMUX_HOST" "test \"\$(uname -m)\" = aarch64 && test -d $TERMUX_RUNTIME_DIR/node_modules && test -f $TERMUX_RUNTIME_DIR/node_modules/@opentui/core/package.json" \
-	|| fail "Termux runtime is not usable. Expected node_modules under $TERMUX_RUNTIME_DIR on $TERMUX_HOST."
-
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR" "$DIST_DIR"
 
-info "Copying Cline bundle..."
+info "Copying the Cline bundle..."
 cp "$CLI_DIR/dist/index.js" "$STAGE_DIR/index.js"
 chmod +x "$STAGE_DIR/index.js"
-copy_dir "$CLI_DIR/dist/extensions" "$STAGE_DIR/extensions"
-copy_dir "$CLI_DIR/dist/cline-hub" "$STAGE_DIR/cline-hub"
+cp -R "$CLI_DIR/dist/extensions" "$STAGE_DIR/extensions"
+cp -R "$CLI_DIR/dist/cline-hub" "$STAGE_DIR/cline-hub"
 cp "$SCRIPT_DIR/install-cline-termux.sh" "$STAGE_DIR/install.sh"
 chmod +x "$STAGE_DIR/install.sh"
 
-info "Syncing Android runtime dependencies from Termux..."
-mkdir -p "$STAGE_DIR/node_modules"
-rsync -a --delete \
-	--exclude '.cache' \
-	--exclude '.bin' \
-	--exclude '@opentui/core-linux-x64' \
-	--exclude '@cline/cli-linux-x64' \
-	--exclude 'bun-webgpu-linux-x64' \
-	"$TERMUX_HOST:$TERMUX_RUNTIME_DIR/node_modules/" \
-	"$STAGE_DIR/node_modules/"
-
-if [ ! -d "$STAGE_DIR/node_modules/@opentui/core-android-arm64" ]; then
-	if [ -d "$STAGE_DIR/node_modules/@opentui/core-linux-arm64" ]; then
-		info "Creating @opentui/core-android-arm64 alias from linux-arm64 native package..."
-		copy_dir "$STAGE_DIR/node_modules/@opentui/core-linux-arm64" "$STAGE_DIR/node_modules/@opentui/core-android-arm64"
-		patch_android_alias_package_json "$STAGE_DIR/node_modules/@opentui/core-android-arm64/package.json"
-	else
-		fail "missing @opentui/core-android-arm64 and no linux-arm64 native package was available to alias"
-	fi
-fi
+info "Resolving the locked Android/ARM64 runtime dependencies..."
+mkdir -p "$STAGE_DIR/patches"
+cp "$REPO_ROOT/patches/@opentui-ui%2Fdialog@0.1.2.patch" "$STAGE_DIR/patches/"
+node "$SCRIPT_DIR/port-metadata.mjs" runtime-package \
+	"$STAGE_DIR/package.json" "$RELEASE_VERSION"
+(
+	cd "$STAGE_DIR"
+	"$BUN_BIN" install \
+		--production \
+		--ignore-scripts \
+		--cpu arm64 \
+		--os linux \
+		--backend copyfile
+)
 
 [ -f "$STAGE_DIR/node_modules/@opentui/core-android-arm64/libopentui.so" ] \
 	|| fail "missing OpenTUI Android native library"
 [ -f "$STAGE_DIR/node_modules/@opentui-ui/dialog/package.json" ] \
 	|| fail "missing patched @opentui-ui/dialog runtime package"
+rg -q 'getDialogVerticalAlign' "$STAGE_DIR/node_modules/@opentui-ui/dialog/dist" \
+	|| fail "the OpenTUI dialog safe-area patch was not applied"
 
-cat > "$STAGE_DIR/package.json" <<EOF
-{
-  "name": "cline-termux",
-  "version": "$RELEASE_VERSION",
-  "private": true,
-  "type": "module",
-  "description": "Cline CLI $CLINE_VERSION packaged for Termux Android aarch64",
-  "bin": {
-    "cline": "./index.js"
-  },
-  "os": [
-    "android"
-  ],
-  "cpu": [
-    "arm64"
-  ]
-}
-EOF
+patch_android_alias_package_json \
+	"$STAGE_DIR/node_modules/@opentui/core-android-arm64/package.json"
+rm -rf "$STAGE_DIR/node_modules/@opentui/core-linux-arm64"
 
-cat > "$STAGE_DIR/VERSION" <<EOF
-release=$RELEASE_VERSION
-tag=$RELEASE_TAG
-cline=$CLINE_VERSION
-source=$SOURCE_COMMIT
-upstream=$UPSTREAM_TAG
-platform=termux-android
-arch=aarch64
-built=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-EOF
-
-if ssh "$TERMUX_HOST" "test -f $TERMUX_RUNTIME_DIR/bun.lock"; then
-	rsync -a "$TERMUX_HOST:$TERMUX_RUNTIME_DIR/bun.lock" "$STAGE_DIR/bun.lock"
-fi
+printf '%s\n' \
+	"release=$RELEASE_VERSION" \
+	"tag=$RELEASE_TAG" \
+	"cline=$CLINE_VERSION" \
+	"source=$SOURCE_COMMIT" \
+	"upstream=$UPSTREAM_TAG" \
+	"platform=termux-android" \
+	"arch=aarch64" \
+	"built=$BUILT_AT" \
+	> "$STAGE_DIR/VERSION"
 
 TARBALL="$DIST_DIR/$RELEASE_NAME.tar.gz"
 CHECKSUM="$TARBALL.sha256"
 
-info "Creating tarball..."
+info "Creating deterministic release archive..."
 rm -f "$TARBALL" "$CHECKSUM"
 (
 	cd "$STAGING_DIR"
-	tar czf "$TARBALL" "$RELEASE_NAME"
+	tar \
+		--sort=name \
+		--mtime="@$SOURCE_DATE_EPOCH" \
+		--owner=0 \
+		--group=0 \
+		--numeric-owner \
+		-cf - "$RELEASE_NAME" | gzip -n > "$TARBALL"
 )
-
 (
 	cd "$DIST_DIR"
 	sha256sum "$RELEASE_NAME.tar.gz" > "$RELEASE_NAME.tar.gz.sha256"
@@ -242,14 +201,6 @@ if [ "$KEEP_STAGING" = false ]; then
 fi
 
 ok "Release bundle ready."
-echo "Tag:       $RELEASE_TAG"
-echo "Tarball:   $TARBALL"
-echo "Checksum:  $CHECKSUM"
-echo
-echo "Publish later with:"
-echo "gh release create $RELEASE_TAG \\"
-echo "  $TARBALL \\"
-echo "  $CHECKSUM \\"
-echo "  $SCRIPT_DIR/install-cline-termux.sh \\"
-echo "  --repo IChouChiang/cline-termux \\"
-echo "  --title \"Cline Termux $RELEASE_TAG\""
+echo "Tag:      $RELEASE_TAG"
+echo "Tarball:  $TARBALL"
+echo "Checksum: $CHECKSUM"

@@ -101,6 +101,7 @@ describe("copyTextToSystemClipboard", () => {
 		await expect(
 			copyTextToSystemClipboard("selected text", {
 				platform: "linux",
+				osRelease: "6.6.30-arch1-1",
 				env: ENV_WITHOUT_SSH,
 			}),
 		).resolves.toBe(true);
