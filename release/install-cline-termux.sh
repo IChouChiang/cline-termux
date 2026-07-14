@@ -17,6 +17,8 @@ SKIP_PKG_UPDATE="${CLINE_TERMUX_SKIP_PKG_UPDATE:-0}"
 SKIP_BUN_INSTALL="${CLINE_TERMUX_SKIP_BUN_INSTALL:-0}"
 DOWNLOAD_DIR=""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CURL_RETRIES="${CLINE_TERMUX_CURL_RETRIES:-5}"
+CURL_MAX_TIME="${CLINE_TERMUX_CURL_MAX_TIME:-600}"
 
 if [ -t 1 ]; then
 	RED='\033[0;31m'
@@ -55,6 +57,13 @@ warn() {
 die() {
 	printf '%b[error]%b %s\n' "$RED" "$NC" "$*" >&2
 	exit 1
+}
+
+curl_request() {
+	curl --fail --location --silent --show-error \
+		--retry "$CURL_RETRIES" --retry-all-errors \
+		--connect-timeout 15 --max-time "$CURL_MAX_TIME" \
+		"$@"
 }
 
 usage() {
@@ -198,7 +207,8 @@ download_bun_ffi() {
 
 	info "Fetching Bun FFI release metadata from GitHub..."
 	local release_json
-	release_json=$(curl -fsSL "$api_url") || die "Failed to fetch Bun FFI release metadata for $tag."
+	release_json=$(curl_request "$api_url") \
+		|| die "Failed to fetch Bun FFI release metadata for $tag."
 
 	local download_url
 	download_url=$(printf '%s' "$release_json" | BUN_FFI_ASSET="$BUN_FFI_ASSET" node -e '
@@ -212,10 +222,10 @@ console.log(asset.browser_download_url || "")
 
 	mkdir -p "$DOWNLOAD_DIR"
 	info "Downloading $BUN_FFI_ASSET ..."
-	curl -fL --retry 3 -o "$DOWNLOAD_DIR/$BUN_FFI_ASSET" "$download_url" \
+	curl_request -o "$DOWNLOAD_DIR/$BUN_FFI_ASSET" "$download_url" \
 		|| die "Failed to download Bun FFI runtime."
 
-	if curl -fsSL -o "$DOWNLOAD_DIR/$BUN_FFI_ASSET.sha256" "$download_url.sha256" 2>/dev/null; then
+	if curl_request -o "$DOWNLOAD_DIR/$BUN_FFI_ASSET.sha256" "$download_url.sha256" 2>/dev/null; then
 		verify_checksum_if_present "$DOWNLOAD_DIR/$BUN_FFI_ASSET"
 	else
 		warn "No Bun FFI checksum asset found; continuing without checksum verification."
@@ -284,7 +294,7 @@ download_release() {
 
 	info "Fetching release metadata from GitHub..."
 	local release_json
-	release_json=$(curl -fsSL "$api_url") || die "Failed to fetch release metadata."
+	release_json=$(curl_request "$api_url") || die "Failed to fetch release metadata."
 
 	local release_info
 	release_info=$(printf '%s' "$release_json" | node -e '
@@ -305,11 +315,11 @@ console.log([data.tag_name || "", asset.name, asset.browser_download_url || ""].
 
 	DOWNLOAD_DIR=$(mktemp -d)
 	info "Downloading $asset_name ..."
-	curl -fL --retry 3 -o "$DOWNLOAD_DIR/$asset_name" "$download_url" \
+	curl_request -o "$DOWNLOAD_DIR/$asset_name" "$download_url" \
 		|| die "Failed to download release tarball."
 
 	local checksum_url="$download_url.sha256"
-	if curl -fsSL -o "$DOWNLOAD_DIR/$asset_name.sha256" "$checksum_url" 2>/dev/null; then
+	if curl_request -o "$DOWNLOAD_DIR/$asset_name.sha256" "$checksum_url" 2>/dev/null; then
 		info "Verifying checksum..."
 		(
 			cd "$DOWNLOAD_DIR"

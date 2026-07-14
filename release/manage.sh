@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MANIFEST="$SCRIPT_DIR/port-manifest.json"
 GITHUB_REPO="${CLINE_TERMUX_GITHUB_REPO:-IChouChiang/cline-termux}"
@@ -10,6 +10,8 @@ DEFAULT_HOST="$(node -e 'const p=require(process.argv[1]); console.log(p.termux.
 WORK_ROOT="$SCRIPT_DIR/.work"
 TOOLS_ROOT="$SCRIPT_DIR/.tools"
 CANDIDATE_ROOT="$SCRIPT_DIR/candidates"
+CURL_RETRIES="${CLINE_TERMUX_CURL_RETRIES:-5}"
+CURL_MAX_TIME="${CLINE_TERMUX_CURL_MAX_TIME:-600}"
 
 fail() {
 	echo "[fail] $*" >&2
@@ -83,6 +85,44 @@ else console.log(value)
 
 require_command() {
 	command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
+
+download_file() {
+	local url="$1"
+	local output="$2"
+	curl --fail --location --silent --show-error \
+		--retry "$CURL_RETRIES" --retry-all-errors \
+		--connect-timeout 15 --max-time "$CURL_MAX_TIME" \
+		--output "$output" "$url"
+}
+
+install_release_on_host() {
+	local host="$1"
+	local installer_url="$2"
+	local release_tag="${3:--}"
+
+	ssh "$host" bash -s -- \
+		"$installer_url" "$release_tag" "$CURL_RETRIES" "$CURL_MAX_TIME" <<'REMOTE'
+set -euo pipefail
+
+installer_url="$1"
+release_tag="$2"
+curl_retries="$3"
+curl_max_time="$4"
+installer="$(mktemp)"
+trap 'rm -f "$installer"' EXIT
+
+curl --fail --location --silent --show-error \
+	--retry "$curl_retries" --retry-all-errors \
+	--connect-timeout 15 --max-time "$curl_max_time" \
+	--output "$installer" "$installer_url"
+
+install_args=(--skip-pkg-update)
+if [ "$release_tag" != - ]; then
+	install_args=(--version "$release_tag" "${install_args[@]}")
+fi
+bash "$installer" "${install_args[@]}"
+REMOTE
 }
 
 require_clean_main() {
@@ -448,7 +488,7 @@ install_published_candidate() {
 	local remote_test="~/tmp/test-installed-$release_tag.sh"
 
 	info "Installing the exact published prerelease on $host..."
-	ssh "$host" "curl -fsSL '$installer_url' | bash -s -- --version '$release_tag' --skip-pkg-update"
+	install_release_on_host "$host" "$installer_url" "$release_tag"
 	scp -q "$SCRIPT_DIR/test-installed-termux.sh" "$host:$remote_test"
 	ssh "$host" "bash $remote_test '$release_tag' '$cli_version'"
 	ok "Published candidate passed automated S25 Ultra acceptance"
@@ -477,7 +517,7 @@ candidate_release() {
 		''|*[!0-9]*) fail "--revision must be a positive integer" ;;
 	esac
 	[ "$revision" -gt 0 ] || fail "--revision must be a positive integer"
-	for required in curl gh scp sha256sum ssh timeout unzip; do
+	for required in cmp curl gh scp sha256sum ssh timeout unzip; do
 		require_command "$required"
 	done
 
@@ -549,6 +589,8 @@ candidate_release() {
 	[ -z "$(git -C "$worktree" diff --name-only --diff-filter=U)" ] \
 		|| fail "unresolved merge conflicts remain"
 
+	run_gate "$log_dir" release-manager \
+		bash "$worktree/release/test-manager-downloads.sh"
 	run_gate "$log_dir" build-sdk \
 		bash -lc "cd '$worktree' && '$bun_bin' run build:sdk"
 	run_gate "$log_dir" cli-unit \
@@ -630,13 +672,14 @@ promote_release() {
 	done
 	validate_release_tag "$release_tag"
 	[ "$confirmed" = true ] || fail "promotion requires --confirm-manual-test"
-	for required in gh scp sha256sum ssh; do
+	for required in cmp curl gh scp sha256sum ssh; do
 		require_command "$required"
 	done
 	require_clean_main
 	git -C "$REPO_ROOT" fetch --quiet origin main "refs/tags/$release_tag:refs/tags/$release_tag"
 
-	local release_json prerelease tag_commit temp_manifest cli_version previous_release asset_dir
+	local release_json prerelease tag_commit temp_manifest cli_version previous_release
+	local asset_dir asset_base archive_name
 	release_json="$(gh release view "$release_tag" --repo "$GITHUB_REPO" --json isPrerelease,tagName,assets)"
 	prerelease="$(printf '%s' "$release_json" | node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(0,"utf8")).isPrerelease)')"
 	[ "$prerelease" = true ] || fail "$release_tag is not a prerelease"
@@ -649,12 +692,23 @@ promote_release() {
 	rm -f "$temp_manifest"
 
 	asset_dir="$(mktemp -d)"
-	gh release download "$release_tag" --repo "$GITHUB_REPO" --dir "$asset_dir"
 	(
+		trap 'rm -rf "$asset_dir"' EXIT
+		asset_base="https://github.com/$GITHUB_REPO/releases/download/$release_tag"
+		archive_name="cline-termux-aarch64-$release_tag.tar.gz"
+		info "Downloading published candidate assets for verification..."
+		download_file "$asset_base/$archive_name" "$asset_dir/$archive_name"
+		download_file "$asset_base/$archive_name.sha256" "$asset_dir/$archive_name.sha256"
+		download_file "$asset_base/install-cline-termux.sh" "$asset_dir/install-cline-termux.sh"
+		git -C "$REPO_ROOT" show "$release_tag:release/install-cline-termux.sh" \
+			> "$asset_dir/tagged-install-cline-termux.sh"
+		cmp -s \
+			"$asset_dir/install-cline-termux.sh" \
+			"$asset_dir/tagged-install-cline-termux.sh" \
+			|| fail "published installer does not match the tagged source"
 		cd "$asset_dir"
-		sha256sum -c "cline-termux-aarch64-$release_tag.tar.gz.sha256"
+		sha256sum -c "$archive_name.sha256"
 	)
-	rm -rf "$asset_dir"
 	ok "Published candidate assets are intact"
 
 	previous_release="$(json_get "$MANIFEST" termux.releaseTag)"
@@ -664,7 +718,7 @@ promote_release() {
 
 	local latest_url="https://github.com/$GITHUB_REPO/releases/latest/download/install-cline-termux.sh"
 	local remote_test="~/tmp/test-installed-latest.sh"
-	if ! ssh "$host" "curl -fsSL '$latest_url' | bash -s -- --skip-pkg-update" \
+	if ! install_release_on_host "$host" "$latest_url" \
 		|| ! scp -q "$SCRIPT_DIR/test-installed-termux.sh" "$host:$remote_test" \
 		|| ! ssh "$host" "bash $remote_test '$release_tag' '$cli_version'"; then
 		warn "latest-URL smoke failed; restoring $previous_release as Latest"
@@ -686,6 +740,10 @@ show_status() {
 	echo
 	gh release list --repo "$GITHUB_REPO" --limit 8
 }
+
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+	return 0
+fi
 
 require_command git
 require_command node

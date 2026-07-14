@@ -69,12 +69,13 @@ The candidate command:
 2. merges one upstream CLI tag
 3. resolves only allowlisted metadata conflicts
 4. installs with upstream's exact Bun version
-5. runs SDK build, CLI unit tests, typecheck, CLI build, and official TUI tests
-6. creates a deterministic Android ARM64 archive
-7. tests the unpublished archive in a Termux sandbox on the S25 Ultra
-8. pushes the final tag and creates a public GitHub prerelease
-9. installs that exact release URL on the S25 Ultra
-10. runs version, help, FFI `dlopen`, and a visible-frame TUI check
+5. tests the release-manager download safeguards
+6. runs SDK build, CLI unit tests, typecheck, CLI build, and official TUI tests
+7. creates a deterministic Android ARM64 archive
+8. tests the unpublished archive in a Termux sandbox on the S25 Ultra
+9. pushes the final tag and creates a public GitHub prerelease
+10. installs that exact release URL on the S25 Ultra
+11. runs version, help, FFI `dlopen`, and a visible-frame TUI check
 
 Nothing is pushed before the source and unpublished-package gates pass. The
 candidate tag uses the final release name, such as `v3.0.30-termux.1`, so the
@@ -98,10 +99,12 @@ bash release/manage.sh promote \
   --confirm-manual-test
 ```
 
-Promotion verifies the published checksum, fast-forwards `main`, marks the
-unchanged prerelease stable/latest, and tests the canonical `releases/latest`
-installer URL. The final release check is an install/update from that stable URL
-on the S7+.
+Promotion downloads the published assets with bounded retries, verifies the
+archive checksum and installer against the tagged source, fast-forwards `main`,
+and marks the unchanged prerelease stable/latest. It then downloads and runs the
+canonical `releases/latest` installer as separate steps so a transport failure
+cannot be masked by a shell pipeline. The final release check is an
+install/update from that stable URL on the S7+.
 
 There is deliberately no range mode. If several upstream tags are pending, the
 entire candidate/manual/promote/device cycle is completed for each tag before
