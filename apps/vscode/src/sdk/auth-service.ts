@@ -8,13 +8,15 @@
 // disk — it's fetched from the Cline API on startup and cached in memory.
 // This matches the CLI's pattern (see apps/cli/src/runtime/interactive-welcome.ts).
 
-import type { OAuthCredentials } from "@cline/core"
+import type { ITelemetryService, OAuthCredentials } from "@cline/core"
 import {
 	createOAuthClientCallbacks,
 	getValidClineCredentials,
+	hashSecret,
 	loginClineOAuth,
 	loginOcaOAuth,
 	loginOpenAICodex,
+	sdkDebug,
 } from "@cline/core"
 import type { ApiProvider } from "@shared/api"
 import { AuthState, UserInfo } from "@shared/proto/cline/account"
@@ -99,7 +101,10 @@ function readClineCredentials(): {
 	try {
 		const manager = getProviderSettingsManager()
 		const settings = manager.getProviderSettings("cline")
-		if (!settings?.auth?.accessToken) return null
+		if (!settings?.auth?.accessToken) {
+			sdkDebug("[SdkAuthService] readClineCredentials: no auth.accessToken found")
+			return null
+		}
 
 		// Strip workos: prefix if present (providers.json stores it with prefix)
 		let accessToken = settings.auth.accessToken
@@ -107,12 +112,16 @@ function readClineCredentials(): {
 			accessToken = accessToken.slice(WORKOS_TOKEN_PREFIX.length)
 		}
 
-		return {
+		const result = {
 			accessToken,
 			refreshToken: settings.auth.refreshToken,
 			expiresAt: (settings.auth as { expiresAt?: number }).expiresAt,
 			accountId: settings.auth.accountId,
 		}
+		sdkDebug(
+			`[SdkAuthService] readClineCredentials: found credentials (accessHash=${hashSecret(result.accessToken)}, refreshHash=${hashSecret(result.refreshToken)}, expiresAt=${result.expiresAt})`,
+		)
+		return result
 	} catch (error) {
 		Logger.error("[SdkAuthService] Failed to read credentials from providers.json:", error)
 		return null
@@ -150,6 +159,9 @@ function writeClineCredentials(credentials: {
 			},
 			{ tokenSource: "oauth", setLastUsed: true },
 		)
+		sdkDebug(
+			`[SdkAuthService] writeClineCredentials: wrote (accessHash=${hashSecret(credentials.accessToken)}, refreshHash=${hashSecret(credentials.refreshToken)}, expiresAt=${credentials.expiresAt})`,
+		)
 	} catch (error) {
 		Logger.error("[SdkAuthService] Failed to write credentials to providers.json:", error)
 	}
@@ -163,6 +175,7 @@ function clearClineCredentials(): void {
 		const manager = getProviderSettingsManager()
 		const existing = manager.getProviderSettings("cline")
 		if (existing) {
+			sdkDebug("[SdkAuthService] clearClineCredentials: clearing auth from providers.json")
 			manager.saveProviderSettings(
 				{
 					...existing,
@@ -189,6 +202,7 @@ export class AuthService {
 	private _activeAuthStatusUpdateHandlers = new Set<StreamingResponseHandler<AuthState>>()
 	private _handlerToController = new Map<StreamingResponseHandler<AuthState>, Controller>()
 	private _refreshPromise: Promise<string | undefined> | null = null
+	private _telemetry?: ITelemetryService
 
 	private constructor() {}
 
@@ -196,9 +210,12 @@ export class AuthService {
 	 * Gets the singleton instance of AuthService.
 	 * On first call with a controller, initializes BannerService.
 	 */
-	public static getInstance(controller?: Controller): AuthService {
+	public static getInstance(controller?: Controller, telemetry?: ITelemetryService): AuthService {
 		if (!AuthService.instance) {
 			AuthService.instance = new AuthService()
+		}
+		if (telemetry) {
+			AuthService.instance._telemetry = telemetry
 		}
 		// Initialize BannerService on first call with a controller
 		// (mirrors classic AuthService behavior)
@@ -251,6 +268,9 @@ export class AuthService {
 			const bearerToken = accessToken.toLowerCase().startsWith(WORKOS_TOKEN_PREFIX)
 				? accessToken
 				: `${WORKOS_TOKEN_PREFIX}${accessToken}`
+			sdkDebug(
+				`[SdkAuthService] fetchUserInfoFromApi: GET ${apiBaseUrl}/api/v1/users/me (tokenHash=${hashSecret(accessToken)})`,
+			)
 			const response = await axios.get(`${apiBaseUrl}/api/v1/users/me`, {
 				headers: {
 					Authorization: `Bearer ${bearerToken}`,
@@ -259,6 +279,7 @@ export class AuthService {
 				},
 				...getAxiosSettings(),
 			})
+			sdkDebug(`[SdkAuthService] fetchUserInfoFromApi: response status=${response.status}`)
 			return response.data?.data ?? null
 		} catch (error) {
 			Logger.error("[SdkAuthService] Failed to fetch user info from API:", error)
@@ -286,7 +307,7 @@ export class AuthService {
 
 		return getValidClineCredentials(
 			this.toOAuthCredentials(authInfo),
-			{ apiBaseUrl: ClineEnv.config().apiBaseUrl },
+			{ apiBaseUrl: ClineEnv.config().apiBaseUrl, telemetry: this._telemetry },
 			{ forceRefresh: options?.forceRefresh },
 		)
 	}
@@ -335,9 +356,11 @@ export class AuthService {
 		}
 
 		if (!this._clineAuthInfo?.refreshToken) {
+			sdkDebug("[SdkAuthService] refreshAccessToken: no refresh token available")
 			return false
 		}
 
+		sdkDebug(`[SdkAuthService] refreshAccessToken: starting (currentTokenHash=${hashSecret(this._clineAuthInfo.idToken)})`)
 		this._refreshPromise = (async () => {
 			try {
 				const currentInfo = this._clineAuthInfo
@@ -346,6 +369,7 @@ export class AuthService {
 				}
 				const newCredentials = await this.resolveValidClineCredentials(currentInfo, { forceRefresh: true })
 				if (!newCredentials) {
+					sdkDebug("[SdkAuthService] refreshAccessToken: refresh returned null — clearing credentials")
 					this._clineAuthInfo = null
 					this._authenticated = false
 					clearClineCredentials()
@@ -375,6 +399,9 @@ export class AuthService {
 				this._authenticated = true
 
 				if (credentialsChanged) {
+					sdkDebug(
+						`[SdkAuthService] refreshAccessToken: credentials changed (newTokenHash=${hashSecret(newCredentials.access)})`,
+					)
 					writeClineCredentials({
 						accessToken: newCredentials.access,
 						refreshToken: newCredentials.refresh,
@@ -387,6 +414,8 @@ export class AuthService {
 							Logger.error("[SdkAuthService] Error sending auth status update after refresh:", err)
 						})
 					})
+				} else {
+					sdkDebug("[SdkAuthService] refreshAccessToken: credentials unchanged after refresh")
 				}
 
 				return this._clineAuthInfo.idToken
@@ -722,8 +751,9 @@ export class AuthService {
 	/**
 	 * Handle deauthentication — clear tokens from providers.json and push unauthenticated state.
 	 */
-	async handleDeauth(_reason: LogoutReason = LogoutReason.UNKNOWN): Promise<void> {
+	async handleDeauth(reason: LogoutReason = LogoutReason.UNKNOWN): Promise<void> {
 		try {
+			telemetryService.captureAuthLoggedOut("cline", reason)
 			this._clineAuthInfo = null
 			this._authenticated = false
 			clearClineCredentials()
