@@ -91,6 +91,31 @@ fi
 [ ! -e "$trap_temp" ] \
 	|| fail_test "candidate cleanup lost its paths after function scope unwound"
 
+conflict_repo="$WORK_DIR/conflict-repo"
+git init -q -b main "$conflict_repo"
+git -C "$conflict_repo" config user.name test
+git -C "$conflict_repo" config user.email test@example.com
+printf 'base\n' > "$conflict_repo/README.md"
+git -C "$conflict_repo" add README.md
+git -C "$conflict_repo" commit -qm base
+git -C "$conflict_repo" switch -qc upstream
+printf 'upstream\n' > "$conflict_repo/README.md"
+git -C "$conflict_repo" commit -qam upstream
+conflict_target="$(git -C "$conflict_repo" rev-parse HEAD)"
+git -C "$conflict_repo" switch -q main
+printf 'downstream\n' > "$conflict_repo/README.md"
+git -C "$conflict_repo" commit -qam downstream
+if git -C "$conflict_repo" merge --no-ff --no-commit "$conflict_target" \
+	> "$WORK_DIR/conflict-merge-output" 2>&1; then
+	fail_test "README conflict fixture merged unexpectedly"
+fi
+resolve_expected_conflicts "$conflict_repo" "$conflict_target"
+[ -z "$(git -C "$conflict_repo" diff --name-only --diff-filter=U)" ] \
+	|| fail_test "README conflict resolver left an unmerged index entry"
+[ "$(cat "$conflict_repo/README.md")" = downstream ] \
+	|| fail_test "README conflict resolver did not preserve downstream content"
+git -C "$conflict_repo" commit -qm resolved-merge
+
 available_kib="$(df -Pk "$CLINE_TERMUX_MANAGER_TEMP_ROOT" | awk 'END { print $4 }')"
 original_min_temp_mib="$MIN_TEMP_MIB"
 MIN_TEMP_MIB="$((available_kib / 1024 + 1))"

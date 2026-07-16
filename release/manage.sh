@@ -543,7 +543,7 @@ resolve_expected_conflicts() {
 		[ "$allowed" = true ] || fail "unexpected merge conflict: $path"
 		case "$path" in
 			README.md)
-				git -C "$worktree" restore --ours --staged --worktree "$path"
+				git -C "$worktree" restore --source=HEAD --staged --worktree "$path"
 				;;
 			bun.lock|package.json)
 				git -C "$worktree" restore --source="$target_commit" --staged --worktree "$path"
