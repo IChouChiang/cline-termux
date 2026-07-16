@@ -12,6 +12,8 @@ export CLINE_TERMUX_LATEST_WAIT_ATTEMPTS=3
 export CLINE_TERMUX_LATEST_WAIT_SECONDS=0
 export CLINE_TERMUX_LATEST_SMOKE_ATTEMPTS=3
 export CLINE_TERMUX_LATEST_SMOKE_DELAY_SECONDS=0
+export CLINE_TERMUX_CANDIDATE_SMOKE_ATTEMPTS=3
+export CLINE_TERMUX_CANDIDATE_SMOKE_DELAY_SECONDS=0
 
 # Sourcing exposes the download helpers without dispatching a manager command.
 source "$SCRIPT_DIR/manage.sh"
@@ -165,6 +167,65 @@ install_latest_with_acceptance() {
 if retry_latest_acceptance test-host v3.0.33-termux.1 3.0.33; then
 	fail_test "canonical acceptance succeeded after every attempt failed"
 fi
+
+candidate_acceptance_calls="$WORK_DIR/candidate-acceptance-calls"
+printf '0\n' > "$candidate_acceptance_calls"
+run_candidate_acceptance() {
+	local count
+	count="$(cat "$candidate_acceptance_calls")"
+	count=$((count + 1))
+	printf '%s\n' "$count" > "$candidate_acceptance_calls"
+	[ "$count" -ge 2 ]
+}
+retry_candidate_acceptance test-host v3.0.33-termux.1 3.0.33 \
+	|| fail_test "candidate acceptance did not recover from a transient failure"
+[ "$(cat "$candidate_acceptance_calls")" -eq 2 ] \
+	|| fail_test "candidate acceptance retry count was unexpected"
+
+run_candidate_acceptance() {
+	return 1
+}
+if retry_candidate_acceptance test-host v3.0.33-termux.1 3.0.33; then
+	fail_test "candidate acceptance succeeded after every attempt failed"
+fi
+unset -f run_candidate_acceptance
+
+gh() {
+	case "$1 $2" in
+		"workflow list")
+			printf '%s\n' '[{"path":".github/workflows/watch-upstream.yml","state":"active"},{"path":".github/workflows/unexpected.yml","state":"active"},{"path":".github/workflows/disabled.yml","state":"disabled_manually"}]'
+			;;
+		*) fail_test "unexpected workflow audit command: $*" ;;
+	esac
+}
+workflow_warning="$(warn_unexpected_active_workflows 2>&1)"
+printf '%s' "$workflow_warning" | grep -q '.github/workflows/unexpected.yml' \
+	|| fail_test "workflow audit did not report an unexpected active workflow"
+if printf '%s' "$workflow_warning" | grep -q '.github/workflows/disabled.yml'; then
+	fail_test "workflow audit reported a disabled workflow"
+fi
+unset -f gh
+
+issue_close_calls="$WORK_DIR/issue-close-calls"
+gh() {
+	case "$1 $2" in
+		"issue list")
+			printf '%s\n' '[{"number":42,"title":"Upstream Cline update available: app 4.0.0, CLI 3.0.42"},{"number":99,"title":"Upstream Cline update available: app 4.0.0, CLI 3.0.420"}]'
+			;;
+		"issue close")
+			printf '%s\n' "$*" >> "$issue_close_calls"
+			;;
+		*) fail_test "unexpected issue command: $*" ;;
+	esac
+}
+close_matching_upstream_issues 3.0.42 v3.0.42-termux.1 \
+	|| fail_test "matching upstream issue closure failed"
+grep -q '^issue close 42 ' "$issue_close_calls" \
+	|| fail_test "exact matching upstream issue was not closed"
+if grep -q '^issue close 99 ' "$issue_close_calls"; then
+	fail_test "issue closure matched a different CLI version"
+fi
+unset -f gh
 
 manager_repo_root="$REPO_ROOT"
 promotion_repo="$WORK_DIR/promotion-repo"

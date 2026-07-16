@@ -18,6 +18,8 @@ LATEST_WAIT_ATTEMPTS="${CLINE_TERMUX_LATEST_WAIT_ATTEMPTS:-20}"
 LATEST_WAIT_SECONDS="${CLINE_TERMUX_LATEST_WAIT_SECONDS:-3}"
 LATEST_SMOKE_ATTEMPTS="${CLINE_TERMUX_LATEST_SMOKE_ATTEMPTS:-3}"
 LATEST_SMOKE_DELAY_SECONDS="${CLINE_TERMUX_LATEST_SMOKE_DELAY_SECONDS:-5}"
+CANDIDATE_SMOKE_ATTEMPTS="${CLINE_TERMUX_CANDIDATE_SMOKE_ATTEMPTS:-3}"
+CANDIDATE_SMOKE_DELAY_SECONDS="${CLINE_TERMUX_CANDIDATE_SMOKE_DELAY_SECONDS:-5}"
 
 fail() {
 	echo "[fail] $*" >&2
@@ -213,6 +215,100 @@ retry_latest_acceptance() {
 	return 1
 }
 
+run_candidate_acceptance() {
+	local host="$1"
+	local release_tag="$2"
+	local cli_version="$3"
+	local remote_test="~/tmp/test-installed-$release_tag.sh"
+
+	scp -q "$SCRIPT_DIR/test-installed-termux.sh" "$host:$remote_test"
+	ssh "$host" "bash $remote_test '$release_tag' '$cli_version'"
+}
+
+retry_candidate_acceptance() {
+	local host="$1"
+	local release_tag="$2"
+	local cli_version="$3"
+	local attempt
+	require_positive_integer CLINE_TERMUX_CANDIDATE_SMOKE_ATTEMPTS "$CANDIDATE_SMOKE_ATTEMPTS"
+	require_nonnegative_integer CLINE_TERMUX_CANDIDATE_SMOKE_DELAY_SECONDS "$CANDIDATE_SMOKE_DELAY_SECONDS"
+	for ((attempt = 1; attempt <= CANDIDATE_SMOKE_ATTEMPTS; attempt++)); do
+		info "Published candidate acceptance ($attempt/$CANDIDATE_SMOKE_ATTEMPTS)..."
+		if run_candidate_acceptance "$host" "$release_tag" "$cli_version"; then
+			return 0
+		fi
+		warn "published candidate acceptance attempt $attempt failed"
+		[ "$attempt" -eq "$CANDIDATE_SMOKE_ATTEMPTS" ] \
+			|| sleep "$((CANDIDATE_SMOKE_DELAY_SECONDS * attempt))"
+	done
+	return 1
+}
+
+warn_unexpected_active_workflows() {
+	if ! command -v gh >/dev/null 2>&1; then
+		warn "cannot audit active GitHub workflows because gh is unavailable"
+		return 0
+	fi
+
+	local workflows unexpected
+	if ! workflows="$(gh workflow list --repo "$GITHUB_REPO" --all --limit 100 --json path,state 2>/dev/null)"; then
+		warn "could not audit active GitHub workflows"
+		return 0
+	fi
+	unexpected="$(printf '%s' "$workflows" | node -e '
+const fs = require("fs")
+const manifest = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+const workflows = JSON.parse(fs.readFileSync(0, "utf8"))
+const allowed = new Set(manifest.github.allowedActiveWorkflows)
+for (const workflow of workflows) {
+  if (workflow.state === "active" && !allowed.has(workflow.path)) {
+    console.log(workflow.path)
+  }
+}
+' "$MANIFEST")"
+
+	if [ -z "$unexpected" ]; then
+		ok "Active GitHub workflows match the downstream allowlist"
+		return 0
+	fi
+	warn "unexpected active GitHub workflows detected:"
+	while IFS= read -r workflow; do
+		[ -n "$workflow" ] && echo "  $workflow" >&2
+	done <<< "$unexpected"
+	warn "review and disable unrelated inherited workflows before the next release"
+}
+
+close_matching_upstream_issues() {
+	local cli_version="$1"
+	local release_tag="$2"
+	local issues issue_number failed=0
+
+	if ! issues="$(gh issue list \
+		--repo "$GITHUB_REPO" \
+		--state open \
+		--label upstream-update \
+		--label cline-sync \
+		--limit 100 \
+		--json number,title)"; then
+		return 1
+	fi
+	while IFS= read -r issue_number; do
+		[ -n "$issue_number" ] || continue
+		gh issue close "$issue_number" \
+			--repo "$GITHUB_REPO" \
+			--comment "Released and validated as [$release_tag](https://github.com/$GITHUB_REPO/releases/tag/$release_tag)." \
+			|| failed=1
+	done < <(printf '%s' "$issues" | node -e '
+const fs = require("fs")
+const version = process.argv[1]
+const suffix = `, CLI ${version}`
+for (const issue of JSON.parse(fs.readFileSync(0, "utf8"))) {
+  if (issue.title.endsWith(suffix)) console.log(issue.number)
+}
+' "$cli_version")
+	return "$failed"
+}
+
 require_clean_main() {
 	[ "$(git -C "$REPO_ROOT" branch --show-current)" = "main" ] \
 		|| fail "check out main before running the release manager"
@@ -370,6 +466,7 @@ inspect_release() {
 		fail "inspection blocked automated candidate preparation"
 	fi
 	ok "$target_tag is ready for one-version candidate preparation"
+	warn_unexpected_active_workflows
 }
 
 ensure_pinned_bun() {
@@ -587,12 +684,10 @@ install_published_candidate() {
 	local release_tag="$2"
 	local cli_version="$3"
 	local installer_url="https://github.com/$GITHUB_REPO/releases/download/$release_tag/install-cline-termux.sh"
-	local remote_test="~/tmp/test-installed-$release_tag.sh"
 
 	info "Installing the exact published prerelease on $host..."
 	install_release_on_host "$host" "$installer_url" "$release_tag"
-	scp -q "$SCRIPT_DIR/test-installed-termux.sh" "$host:$remote_test"
-	ssh "$host" "bash $remote_test '$release_tag' '$cli_version'"
+	retry_candidate_acceptance "$host" "$release_tag" "$cli_version"
 	ok "Published candidate passed automated S25 Ultra acceptance"
 }
 
@@ -917,6 +1012,10 @@ promote_release() {
 
 	cleanup_managed_temp "$promotion_temp"
 	trap - EXIT INT TERM
+	if ! close_matching_upstream_issues "$cli_version" "$release_tag"; then
+		warn "release succeeded, but its upstream-update issue could not be closed"
+	fi
+	warn_unexpected_active_workflows
 	ok "$release_tag is stable, latest, and installed from the canonical latest URL"
 	echo "The final release check is now the clean install/update on termux_wifi_s7."
 }
@@ -930,6 +1029,8 @@ show_status() {
 	echo "Bun FFI runtime:   $(json_get "$MANIFEST" bunFfi.version)"
 	echo
 	gh release list --repo "$GITHUB_REPO" --limit 8
+	echo
+	warn_unexpected_active_workflows
 }
 
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then

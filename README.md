@@ -132,9 +132,10 @@ unpublished archive on Termux, publishes a prerelease, and installs that exact
 tag on the S25 Ultra. Host-side test files are confined to a disposable staging
 directory instead of accumulating in `/tmp`. `promote` only changes release
 state after the manual touch/IME test; it does not rebuild or replace release
-assets. It waits for GitHub's Latest state, retries the complete canonical
-install check, and can safely resume an interrupted promotion. The manager has
-no range mode, so an upstream CLI release cannot be skipped accidentally.
+assets. Device acceptance checks use bounded retries. Promotion waits for
+GitHub's Latest state, closes the matching update issue, audits active workflows,
+and can safely resume after interruption. The manager has no range mode, so an
+upstream CLI release cannot be skipped accidentally.
 
 ## Uninstall
 

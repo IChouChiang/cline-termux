@@ -76,7 +76,7 @@ The candidate command:
 9. tests the unpublished archive in a Termux sandbox on the S25 Ultra
 10. pushes the final tag and creates a public GitHub prerelease
 11. installs that exact release URL on the S25 Ultra
-12. runs version, help, FFI `dlopen`, and a visible-frame TUI check
+12. runs version, help, FFI `dlopen`, and a bounded-retry visible-frame TUI check
 
 The official TUI suite creates many isolated Cline homes without removing them.
 The manager points `TMPDIR` at a disposable run directory under
@@ -116,8 +116,10 @@ API resolves to the new tag, then retries the complete canonical
 `releases/latest` install and device acceptance sequence. A partially completed
 promotion can be rerun with the same command; it validates and converges local
 `main`, `origin/main`, and GitHub release state without rebuilding or replacing
-assets. The final release check is an install/update from that stable URL on the
-S7+.
+assets. After acceptance, it closes the exact matching upstream-update issue and
+warns if active GitHub workflows fall outside the downstream allowlist in
+`release/port-manifest.json`. The final release check is an install/update from
+that stable URL on the S7+.
 
 There is deliberately no range mode. If several upstream tags are pending, the
 entire candidate/manual/promote/device cycle is completed for each tag before

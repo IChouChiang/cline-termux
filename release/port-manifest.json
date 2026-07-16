@@ -14,6 +14,12 @@
     "architecture": "aarch64",
     "candidateHost": "termux_wifi"
   },
+  "github": {
+    "allowedActiveWorkflows": [
+      ".github/workflows/repo-label-issues.yml",
+      ".github/workflows/watch-upstream.yml"
+    ]
+  },
   "toolchain": {
     "bun": "1.3.13",
     "node": ">=22",
