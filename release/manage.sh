@@ -301,9 +301,12 @@ close_matching_upstream_issues() {
 	done < <(printf '%s' "$issues" | node -e '
 const fs = require("fs")
 const version = process.argv[1]
-const suffix = `, CLI ${version}`
+const legacySuffix = `, CLI ${version}`
+const cliOnlyTitle = `Upstream Cline CLI release available: cli-v${version}`
 for (const issue of JSON.parse(fs.readFileSync(0, "utf8"))) {
-  if (issue.title.endsWith(suffix)) console.log(issue.number)
+  if (issue.title === cliOnlyTitle || issue.title.endsWith(legacySuffix)) {
+    console.log(issue.number)
+  }
 }
 ' "$cli_version")
 	return "$failed"

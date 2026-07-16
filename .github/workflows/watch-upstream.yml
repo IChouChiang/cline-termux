@@ -1,4 +1,4 @@
-name: Watch upstream Cline releases
+name: Watch upstream Cline CLI releases
 
 on:
   schedule:
@@ -11,14 +11,14 @@ permissions:
 
 jobs:
   watch-upstream:
-    name: Check official Cline versions
+    name: Check official Cline CLI tags
     runs-on: ubuntu-latest
     if: github.repository != 'cline/cline'
     steps:
-      - name: Checkout fork
+      - name: Checkout downstream
         uses: actions/checkout@v6
 
-      - name: Open upstream update issue when needed
+      - name: Open one issue for each pending CLI release
         uses: actions/github-script@v9
         with:
           script: |
@@ -31,74 +31,23 @@ jobs:
               { name: "cline-sync", color: "5319e7", description: "Downstream Cline sync task" },
             ]
 
-            function parseVersion(value) {
-              const match = String(value || "").match(/(\d+)\.(\d+)\.(\d+)/)
-              return match ? match.slice(1).map(Number) : [0, 0, 0]
+            function parseCliTag(value) {
+              const match = String(value || "").match(/^cli-v(\d+)\.(\d+)\.(\d+)$/)
+              return match ? match.slice(1).map(Number) : null
             }
 
-            function compareVersionDesc(left, right) {
-              const a = parseVersion(left)
-              const b = parseVersion(right)
+            function compareCliTags(left, right) {
+              const a = parseCliTag(left)
+              const b = parseCliTag(right)
+              if (!a || !b) {
+                throw new Error(`Cannot compare invalid CLI tags: ${left}, ${right}`)
+              }
               for (let index = 0; index < 3; index += 1) {
                 if (a[index] !== b[index]) {
-                  return b[index] - a[index]
+                  return a[index] - b[index]
                 }
               }
               return 0
-            }
-
-            function readPackageVersion(content) {
-              const version = JSON.parse(content).version
-              return typeof version === "string" && version.length > 0 ? version : null
-            }
-
-            function readLocalVersion(paths) {
-              for (const path of paths) {
-                if (!fs.existsSync(path)) {
-                  continue
-                }
-
-                const version = readPackageVersion(fs.readFileSync(path, "utf8"))
-                if (version) {
-                  return { path, version }
-                }
-              }
-              return { path: null, version: null }
-            }
-
-            async function readUpstreamVersion(paths) {
-              for (const path of paths) {
-                try {
-                  const response = await github.rest.repos.getContent({
-                    ...upstream,
-                    path,
-                    ref: "main",
-                  })
-                  if (!Array.isArray(response.data) && response.data.content) {
-                    const content = Buffer.from(response.data.content, "base64").toString("utf8")
-                    const version = readPackageVersion(content)
-                    if (version) {
-                      return { path, version }
-                    }
-                  }
-                } catch (error) {
-                  if (error.status !== 404) {
-                    throw error
-                  }
-                }
-              }
-              return { path: null, version: null }
-            }
-
-            async function latestTagMatching(pattern) {
-              const tags = await github.paginate(github.rest.repos.listTags, {
-                ...upstream,
-                per_page: 100,
-              })
-              return tags
-                .map((tag) => tag.name)
-                .filter((name) => pattern.test(name))
-                .sort(compareVersionDesc)[0] || null
             }
 
             async function ensureLabel(label) {
@@ -120,37 +69,31 @@ jobs:
               }
             }
 
-            const currentApp = readLocalVersion(["apps/vscode/package.json", "package.json"])
-            const currentCli = readLocalVersion(["apps/cli/package.json", "sdk/apps/cli/package.json", "cli/package.json"])
-            const upstreamApp = await readUpstreamVersion(["apps/vscode/package.json", "package.json"])
-            const upstreamCli = await readUpstreamVersion(["apps/cli/package.json", "sdk/apps/cli/package.json", "cli/package.json"])
-            const latestAppTag = await latestTagMatching(/^v\d+\.\d+\.\d+$/)
-            const latestCliTag = await latestTagMatching(/^cli-v\d+\.\d+\.\d+$/)
-
-            const appChanged = upstreamApp.version && upstreamApp.version !== currentApp.version
-            const cliChanged = upstreamCli.version && upstreamCli.version !== currentCli.version
-
-            core.summary.addRaw("## Upstream Cline watch\n\n")
-            core.summary.addRaw(`- Current app version: ${currentApp.version || "unknown"} (${currentApp.path || "not found"})\n`)
-            core.summary.addRaw(`- Upstream app version: ${upstreamApp.version || "unknown"} (${upstreamApp.path || "not found"})\n`)
-            core.summary.addRaw(`- Latest app tag: ${latestAppTag || "not found"}\n`)
-            core.summary.addRaw(`- Current CLI version: ${currentCli.version || "unknown"} (${currentCli.path || "not found"})\n`)
-            core.summary.addRaw(`- Upstream CLI version: ${upstreamCli.version || "unknown"} (${upstreamCli.path || "not found"})\n`)
-            core.summary.addRaw(`- Latest CLI tag: ${latestCliTag || "not found"}\n`)
-
-            if (!appChanged && !cliChanged) {
-              core.info("No upstream version drift detected.")
-              return
+            const manifest = JSON.parse(fs.readFileSync("release/port-manifest.json", "utf8"))
+            const currentCliTag = manifest?.upstream?.tag
+            if (!parseCliTag(currentCliTag)) {
+              throw new Error(`release/port-manifest.json contains an invalid upstream CLI tag: ${currentCliTag}`)
             }
 
-            const trackingKey = `cline-upstream:${upstreamApp.version || latestAppTag || "unknown-app"}:${latestCliTag || upstreamCli.version || "unknown-cli"}`
-            const search = await github.rest.search.issuesAndPullRequests({
-              q: `repo:${context.repo.owner}/${context.repo.repo} is:issue "${trackingKey}"`,
-              per_page: 1,
+            const upstreamTags = await github.paginate(github.rest.repos.listTags, {
+              ...upstream,
+              per_page: 100,
             })
+            const cliTags = [...new Set(
+              upstreamTags
+                .map((tag) => tag.name)
+                .filter((name) => parseCliTag(name)),
+            )].sort(compareCliTags)
+            const latestCliTag = cliTags.at(-1) || null
+            const pendingCliTags = cliTags.filter((tag) => compareCliTags(tag, currentCliTag) > 0)
 
-            if (search.data.total_count > 0) {
-              core.info(`Issue already exists for ${trackingKey}.`)
+            core.summary.addRaw("## Upstream Cline CLI watch\n\n")
+            core.summary.addRaw(`- Current downstream CLI tag: ${currentCliTag}\n`)
+            core.summary.addRaw(`- Latest upstream CLI tag: ${latestCliTag || "not found"}\n`)
+            core.summary.addRaw(`- Pending CLI tags: ${pendingCliTags.join(", ") || "none"}\n`)
+
+            if (pendingCliTags.length === 0) {
+              core.info("No new upstream CLI release tags detected.")
               return
             }
 
@@ -158,37 +101,45 @@ jobs:
               await ensureLabel(label)
             }
 
-            const title = `Upstream Cline update available: app ${upstreamApp.version || latestAppTag || "unknown"}, CLI ${upstreamCli.version || latestCliTag || "unknown"}`
-            const body = [
-              "Official Cline has moved ahead of this Termux downstream fork.",
-              "",
-              "## Detected versions",
-              `- Current fork app version: ${currentApp.version || "unknown"}`,
-              `- Upstream app version: ${upstreamApp.version || "unknown"}`,
-              `- Latest upstream app tag: ${latestAppTag || "unknown"}`,
-              `- Current fork CLI version: ${currentCli.version || "unknown"}`,
-              `- Upstream CLI version: ${upstreamCli.version || "unknown"}`,
-              `- Latest upstream CLI tag: ${latestCliTag || "unknown"}`,
-              "",
-              "## Suggested sync checklist",
-              "- [ ] Read upstream changelog/release notes for user-facing changes.",
-              "- [ ] Inspect upstream layout changes, especially `apps/vscode`, `apps/cli`, and SDK packages.",
-              "- [ ] Create a short-lived sync branch such as `sync/upstream-vX`.",
-              "- [ ] Port Termux-specific CLI, OpenTUI, Bun FFI, and Android packaging changes.",
-              "- [ ] Rebuild the Termux release package.",
-              "- [ ] Deploy to a canary Termux folder before switching the active install.",
-              "- [ ] Run direct Termux CLI smoke tests and S7/phone install smoke tests.",
-              "- [ ] Update README / release notes with any new setup or compatibility details.",
-              "",
-              `Tracking key: \`${trackingKey}\``,
-            ].join("\n")
+            for (const cliTag of pendingCliTags) {
+              const trackingKey = `cline-cli-upstream:${cliTag}`
+              const search = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${context.repo.owner}/${context.repo.repo} is:issue "${trackingKey}"`,
+                per_page: 1,
+              })
 
-            const issue = await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title,
-              body,
-              labels: labels.map((label) => label.name),
-            })
+              if (search.data.total_count > 0) {
+                core.info(`Issue already exists for ${trackingKey}.`)
+                continue
+              }
 
-            core.info(`Opened ${issue.data.html_url}`)
+              const title = `Upstream Cline CLI release available: ${cliTag}`
+              const body = [
+                "Official Cline has published a stable CLI release ahead of this Termux port.",
+                "",
+                "## Release",
+                `- Current downstream CLI tag: ${currentCliTag}`,
+                `- Upstream CLI tag to process: ${cliTag}`,
+                "",
+                "Every stable CLI tag is tracked independently. Process older pending CLI issues first.",
+                "",
+                "## Sync checklist",
+                `- [ ] Run \`bash release/manage.sh inspect ${cliTag}\` and review the upstream CLI diff.`,
+                `- [ ] Run \`bash release/manage.sh candidate ${cliTag}\`.`,
+                "- [ ] Complete the manual touch, IME, dialog, transcript-scroll, and provider test on the S25 Ultra.",
+                "- [ ] Promote the unchanged candidate release.",
+                "- [ ] Install the stable release on the S7+ and complete the second-device check.",
+                "",
+                `Tracking key: \`${trackingKey}\``,
+              ].join("\n")
+
+              const issue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: labels.map((label) => label.name),
+              })
+
+              core.info(`Opened ${issue.data.html_url}`)
+            }
