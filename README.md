@@ -9,8 +9,8 @@ official Cline release.
 Current port:
 
 ```text
-Cline CLI: 3.0.42
-Termux release: v3.0.42-termux.1
+Cline CLI: 3.0.43
+Termux release: v3.0.43-termux.1
 Platform: Android aarch64
 Command: cline
 ```
