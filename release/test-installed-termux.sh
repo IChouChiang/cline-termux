@@ -37,8 +37,28 @@ ACTUAL_CLINE="$(read_field "$VERSION_FILE" cline)"
 	|| fail "expected release $EXPECTED_RELEASE, found v$ACTUAL_RELEASE"
 [ "$ACTUAL_CLINE" = "$EXPECTED_CLINE" ] \
 	|| fail "expected Cline $EXPECTED_CLINE, found $ACTUAL_CLINE"
-[ "$($LAUNCHER --version)" = "$EXPECTED_CLINE" ] \
-	|| fail "cline --version did not report $EXPECTED_CLINE"
+
+if dpkg --compare-versions "$EXPECTED_CLINE" ge 3.0.43; then
+	[ -f "$INSTALL_BASE/current/cline-node-wrapper.cjs" ] \
+		|| fail "missing upstream Node launcher"
+	[ -f "$INSTALL_BASE/current/ca-certs.cjs" ] \
+		|| fail "missing upstream certificate helper"
+	[ -x "$INSTALL_BASE/current/run-cline-termux.sh" ] \
+		|| fail "missing Termux runtime adapter"
+	mkdir -p "$HOME/tmp"
+	CA_TEST_DIR="$(mktemp -d "$HOME/tmp/cline-termux-ca.XXXXXX")"
+	ACTUAL_VERSION="$(CLINE_DIR="$CA_TEST_DIR" "$LAUNCHER" --version)"
+	[ -s "$CA_TEST_DIR/cli-node-extra-ca-certs.pem" ] \
+		|| fail "launcher did not create a managed OS trust bundle"
+	rm -rf "$CA_TEST_DIR"
+	CA_TEST_DIR=""
+	[ "$ACTUAL_VERSION" = "$EXPECTED_CLINE" ] \
+		|| fail "cline --version did not report $EXPECTED_CLINE"
+	ok "Node launcher harvested the Termux OS trust store"
+else
+	[ "$($LAUNCHER --version)" = "$EXPECTED_CLINE" ] \
+		|| fail "cline --version did not report $EXPECTED_CLINE"
+fi
 $LAUNCHER --help >/dev/null
 ok "CLI metadata, version, and help"
 

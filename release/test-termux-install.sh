@@ -118,7 +118,21 @@ rg -q --glob 'index-*.js' \
 
 VERSION_FILE="$WORK_DIR/opt/cline-termux/current/VERSION"
 CLINE_VERSION=$(sed -n 's/^cline=//p' "$VERSION_FILE" | head -n 1)
-INSTALLED_VERSION=$("$WORK_DIR/bin/cline" --version)
+if dpkg --compare-versions "$CLINE_VERSION" ge 3.0.43; then
+	[ -f "$WORK_DIR/opt/cline-termux/current/cline-node-wrapper.cjs" ] \
+		|| fail "upstream Node launcher missing from install"
+	[ -f "$WORK_DIR/opt/cline-termux/current/ca-certs.cjs" ] \
+		|| fail "upstream certificate helper missing from install"
+	[ -x "$WORK_DIR/opt/cline-termux/current/run-cline-termux.sh" ] \
+		|| fail "Termux runtime adapter missing from install"
+	CA_TEST_DIR="$WORK_DIR/ca-test"
+	mkdir -p "$CA_TEST_DIR"
+	INSTALLED_VERSION=$(CLINE_DIR="$CA_TEST_DIR" "$WORK_DIR/bin/cline" --version)
+	[ -s "$CA_TEST_DIR/cli-node-extra-ca-certs.pem" ] \
+		|| fail "Cline launcher did not create a managed OS trust bundle"
+else
+	INSTALLED_VERSION=$("$WORK_DIR/bin/cline" --version)
+fi
 [ "$INSTALLED_VERSION" = "$CLINE_VERSION" ] \
 	|| fail "expected cline --version to print $CLINE_VERSION, got $INSTALLED_VERSION"
 

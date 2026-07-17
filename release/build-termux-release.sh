@@ -142,6 +142,17 @@ cp -R "$CLI_DIR/dist/cline-hub" "$STAGE_DIR/cline-hub"
 cp "$SCRIPT_DIR/install-cline-termux.sh" "$STAGE_DIR/install.sh"
 chmod +x "$STAGE_DIR/install.sh"
 
+if [ -f "$CLI_DIR/bin/ca-certs.cjs" ]; then
+	[ -f "$CLI_DIR/bin/cline" ] \
+		|| fail "Cline certificate support is missing apps/cli/bin/cline"
+	info "Packaging the upstream Node trust-store wrapper..."
+	cp "$CLI_DIR/bin/cline" "$STAGE_DIR/cline-node-wrapper.cjs"
+	cp "$CLI_DIR/bin/ca-certs.cjs" "$STAGE_DIR/ca-certs.cjs"
+	cp "$SCRIPT_DIR/run-cline-termux.sh" "$STAGE_DIR/run-cline-termux.sh"
+	chmod +x "$STAGE_DIR/run-cline-termux.sh"
+	mkdir -p "$STAGE_DIR/empty-ca-dir"
+fi
+
 info "Resolving the locked Android/ARM64 runtime dependencies..."
 mkdir -p "$STAGE_DIR/patches"
 cp "$REPO_ROOT/patches/@opentui%2Fcore@0.1.102.patch" "$STAGE_DIR/patches/"

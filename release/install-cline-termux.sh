@@ -412,6 +412,22 @@ else
 fi
 
 export CLINE_NO_AUTO_UPDATE="\${CLINE_NO_AUTO_UPDATE:-1}"
+
+if [ -f "\$CLINE_TERMUX_HOME/cline-node-wrapper.cjs" ] \
+	&& [ -f "\$CLINE_TERMUX_HOME/ca-certs.cjs" ] \
+	&& [ -x "\$CLINE_TERMUX_HOME/run-cline-termux.sh" ]; then
+	export CLINE_TERMUX_HOME
+	export CLINE_TERMUX_BUN="\$BUN_BIN"
+	export CLINE_BIN_PATH="\${CLINE_BIN_PATH:-\$CLINE_TERMUX_HOME/run-cline-termux.sh}"
+	if [ -z "\${SSL_CERT_FILE:-}" ] && [ -r "$TERMUX_PREFIX/etc/tls/cert.pem" ]; then
+		export SSL_CERT_FILE="$TERMUX_PREFIX/etc/tls/cert.pem"
+	fi
+	if [ -z "\${SSL_CERT_DIR:-}" ] && [ -d "\$CLINE_TERMUX_HOME/empty-ca-dir" ]; then
+		export SSL_CERT_DIR="\$CLINE_TERMUX_HOME/empty-ca-dir"
+	fi
+	exec node "\$CLINE_TERMUX_HOME/cline-node-wrapper.cjs" "\$@"
+fi
+
 exec "\$BUN_BIN" "\$CLINE_TERMUX_HOME/index.js" "\$@"
 LAUNCHER
 	chmod +x "$LAUNCHER_PATH"
