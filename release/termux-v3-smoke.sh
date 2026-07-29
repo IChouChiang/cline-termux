@@ -5,7 +5,7 @@ set -euo pipefail
 REPO_DIR="$HOME/workspace/cline-termux-v3-phone"
 BUN_CANARY_DIR="${BUN_CANARY_DIR:-$HOME/.local/opt/bun-android-canary}"
 BUN_ANDROID_URL="${BUN_ANDROID_URL:-https://github.com/oven-sh/bun/releases/latest/download/bun-linux-aarch64-android.zip}"
-OPENTUI_VERSION="${OPENTUI_VERSION:-0.1.102}"
+OPENTUI_VERSION="${OPENTUI_VERSION:-0.4.3}"
 OPENTUI_SMOKE_DIR="${OPENTUI_SMOKE_DIR:-$HOME/tmp/opentui-termux-runtime-smoke}"
 INSTALL_BUN=false
 RUNTIME_ONLY=false

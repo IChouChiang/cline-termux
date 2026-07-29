@@ -155,8 +155,10 @@ fi
 
 info "Resolving the locked Android/ARM64 runtime dependencies..."
 mkdir -p "$STAGE_DIR/patches"
-cp "$REPO_ROOT/patches/@opentui%2Fcore@0.1.102.patch" "$STAGE_DIR/patches/"
-cp "$REPO_ROOT/patches/@opentui-ui%2Fdialog@0.1.2.patch" "$STAGE_DIR/patches/"
+# Copy every port patch rather than naming versions, so an OpenTUI bump only
+# requires renaming the patch files. runtime-package derives the matching
+# patchedDependencies keys from the installed versions.
+cp "$REPO_ROOT"/patches/*.patch "$STAGE_DIR/patches/"
 node "$SCRIPT_DIR/port-metadata.mjs" runtime-package \
 	"$STAGE_DIR/package.json" "$RELEASE_VERSION"
 (
@@ -175,10 +177,19 @@ node "$SCRIPT_DIR/port-metadata.mjs" runtime-package \
 	|| fail "missing patched @opentui-ui/dialog runtime package"
 rg -q 'getDialogVerticalAlign' "$STAGE_DIR/node_modules/@opentui-ui/dialog/dist" \
 	|| fail "the OpenTUI dialog safe-area patch was not applied"
+rg -q 'this\.remove\(renderable\)' "$STAGE_DIR/node_modules/@opentui-ui/dialog/dist" \
+	|| fail "the upstream OpenTUI dialog remove() fix was not applied"
 rg -q --glob 'index-*.js' \
 	'process\.platform === "linux" \|\| process\.platform === "android"' \
 	"$STAGE_DIR/node_modules/@opentui/core" \
 	|| fail "the OpenTUI Android renderer-thread patch was not applied"
+# OpenTUI 0.4.x resolves its native package through a hardcoded
+# darwin/linux/win32 chain that throws on Android. Without this hunk the build
+# installs cleanly and only fails at launch on the device.
+rg -q --glob 'index-*.js' \
+	'@opentui/core-android-arm64' \
+	"$STAGE_DIR/node_modules/@opentui/core" \
+	|| fail "the OpenTUI Android native-package resolver patch was not applied"
 
 patch_android_alias_package_json \
 	"$STAGE_DIR/node_modules/@opentui/core-android-arm64/package.json"

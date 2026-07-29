@@ -1,0 +1,26 @@
+diff --git a/index-d5xqskty.js b/index-d5xqskty.js
+--- a/index-d5xqskty.js
++++ b/index-d5xqskty.js
+@@ -11840,6 +11840,10 @@
+     if (process.arch === "arm64")
+       return await import("@opentui/core-win32-arm64");
+   }
++  if (process.platform === "android") {
++    if (process.arch === "arm64")
++      return await import("@opentui/core-android-arm64");
++  }
+   throw new Error(`opentui is not supported on the current platform: ${process.platform}-${process.arch}`);
+ }
+ var nativePackage = await resolveNativePackage();
+diff --git a/index-xt9f071j.js b/index-xt9f071j.js
+--- a/index-xt9f071j.js
++++ b/index-xt9f071j.js
+@@ -7173,7 +7173,7 @@
+     }
+     if (config.useThread === undefined)
+       config.useThread = true;
+-    if (process.platform === "linux")
++    if (process.platform === "linux" || process.platform === "android")
+       config.useThread = false;
+     lib.setUseThread(rendererPtr, config.useThread);
+     const kittyConfig = config.useKittyKeyboard ?? {};

@@ -648,6 +648,14 @@ resolve_expected_conflicts() {
 			bun.lock|package.json)
 				git -C "$worktree" restore --source="$target_commit" --staged --worktree "$path"
 				;;
+			patches/*.patch)
+				# The port owns its patch files. When upstream ships its own patch at
+				# the same path, its hunks are reviewed and folded into ours by hand
+				# during inspect, so the downstream copy is the merged one. Keeping
+				# "theirs" here would silently drop the port's changes.
+				warn "keeping the downstream $path; confirm it still carries upstream's hunks"
+				git -C "$worktree" restore --source=HEAD --staged --worktree "$path"
+				;;
 			*) fail "no resolver is defined for allowed conflict: $path" ;;
 		esac
 	done

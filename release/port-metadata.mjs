@@ -6,10 +6,24 @@ import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
-const termuxPatchedDependencies = {
-	"@opentui/core@0.1.102": "patches/@opentui%2Fcore@0.1.102.patch",
-	"@opentui-ui/dialog@0.1.2": "patches/@opentui-ui%2Fdialog@0.1.2.patch",
-};
+// Derived from the pinned OpenTUI versions rather than hardcoded, so an
+// upstream version bump only requires renaming the patch files to match.
+// The patch filename encodes the version because that is Bun's convention
+// for `patchedDependencies` keys.
+function corePatchPath(version) {
+	return `patches/@opentui%2Fcore@${version}.patch`;
+}
+
+function dialogPatchPath(version) {
+	return `patches/@opentui-ui%2Fdialog@${version}.patch`;
+}
+
+function termuxPatchedDependencies(coreVersion, dialogVersion) {
+	return {
+		[`@opentui/core@${coreVersion}`]: corePatchPath(coreVersion),
+		[`@opentui-ui/dialog@${dialogVersion}`]: dialogPatchPath(dialogVersion),
+	};
+}
 
 function fail(message) {
 	console.error(`[fail] ${message}`);
@@ -51,7 +65,16 @@ function updatePortMetadata() {
 	const revisionMatch = releaseTag.match(/-termux\.(\d+)$/);
 	if (!revisionMatch) fail(`invalid Termux release tag: ${releaseTag}`);
 
-	rootPackage.patchedDependencies = termuxPatchedDependencies;
+	const coreVersion = cliPackage.dependencies["@opentui/core"];
+	const dialogVersion = cliPackage.dependencies["@opentui-ui/dialog"].replace(
+		/^\^/,
+		"",
+	);
+
+	rootPackage.patchedDependencies = termuxPatchedDependencies(
+		coreVersion,
+		dialogVersion,
+	);
 	writeJson(rootPackagePath, rootPackage);
 
 	manifest.upstream.tag = upstreamTag;
@@ -61,11 +84,11 @@ function updatePortMetadata() {
 	manifest.termux.revision = Number(revisionMatch[1]);
 	manifest.toolchain.bun = rootPackage.engines?.bun ?? "";
 	manifest.toolchain.node = rootPackage.engines?.node ?? "";
-	manifest.openTui.core = cliPackage.dependencies["@opentui/core"];
+	manifest.openTui.core = coreVersion;
 	manifest.openTui.react = cliPackage.dependencies["@opentui/react"];
-	manifest.openTui.dialog = cliPackage.dependencies[
-		"@opentui-ui/dialog"
-	].replace(/^\^/, "");
+	manifest.openTui.dialog = dialogVersion;
+	manifest.openTui.corePatch = corePatchPath(coreVersion);
+	manifest.openTui.dialogPatch = dialogPatchPath(dialogVersion);
 	writeJson(manifestPath, manifest);
 
 	const readmePath = join(repoRoot, "README.md");
@@ -106,7 +129,10 @@ function writeRuntimePackage() {
 		os: ["android"],
 		cpu: ["arm64"],
 		dependencies,
-		patchedDependencies: termuxPatchedDependencies,
+		patchedDependencies: termuxPatchedDependencies(
+			dependencies["@opentui/core"],
+			dependencies["@opentui-ui/dialog"],
+		),
 	});
 }
 

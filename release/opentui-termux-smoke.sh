@@ -5,7 +5,7 @@ set -euo pipefail
 BUN_CANARY_DIR="${BUN_CANARY_DIR:-$HOME/.local/opt/bun-android-canary}"
 BUN_BIN="${BUN_BIN:-$BUN_CANARY_DIR/bun-linux-aarch64-android/bun}"
 SMOKE_DIR="${SMOKE_DIR:-$HOME/tmp/opentui-termux-alias-force}"
-OPENTUI_VERSION="${OPENTUI_VERSION:-0.1.102}"
+OPENTUI_VERSION="${OPENTUI_VERSION:-0.4.3}"
 
 fail() {
 	echo "[fail] $*" >&2

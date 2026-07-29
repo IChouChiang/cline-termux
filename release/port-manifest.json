@@ -36,18 +36,19 @@
     "asset": "bun-android-ffi-aarch64-v1.4.0-canary.1-55f6c899f.tar.gz"
   },
   "openTui": {
-    "core": "0.1.102",
-    "react": "0.1.102",
+    "core": "0.4.3",
+    "react": "0.4.3",
     "dialog": "0.1.2",
-    "corePatch": "patches/@opentui%2Fcore@0.1.102.patch",
+    "corePatch": "patches/@opentui%2Fcore@0.4.3.patch",
     "dialogPatch": "patches/@opentui-ui%2Fdialog@0.1.2.patch",
-    "nativeCompatibility": "disable renderer threading on Android and add DT_NEEDED libc.so to libopentui.so"
+    "nativeCompatibility": "disable renderer threading on Android, resolve @opentui/core-android-arm64 when process.platform is android (0.4.x replaced the dynamic platform import with a hardcoded darwin/linux/win32 chain), and add DT_NEEDED libc.so to libopentui.so"
   },
   "merge": {
     "allowedConflictPaths": [
       "README.md",
       "bun.lock",
-      "package.json"
+      "package.json",
+      "patches/@opentui-ui%2Fdialog@0.1.2.patch"
     ]
   }
 }
