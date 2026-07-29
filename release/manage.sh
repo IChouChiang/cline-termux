@@ -1020,7 +1020,7 @@ promote_release() {
 	fi
 	warn_unexpected_active_workflows
 	ok "$release_tag is stable, latest, and installed from the canonical latest URL"
-	echo "The final release check is now the clean install/update on termux_wifi_s7."
+	echo "The final release check is now the clean install/update on s7plus-lan."
 }
 
 show_status() {

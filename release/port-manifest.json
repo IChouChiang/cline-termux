@@ -12,7 +12,7 @@
     "revision": 1,
     "platform": "android",
     "architecture": "aarch64",
-    "candidateHost": "termux_wifi"
+    "candidateHost": "s25u-lan"
   },
   "github": {
     "allowedActiveWorkflows": [
