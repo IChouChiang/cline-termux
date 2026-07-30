@@ -79,6 +79,20 @@ on a small experimental Bun Android FFI runtime:
 https://github.com/IChouChiang/bun-android-ffi
 ```
 
+## Android Native OpenTUI Library
+
+OpenTUI publishes native renderer packages for macOS, Linux, and Windows, but
+not for Android. This port builds a genuine Android/Bionic
+`@opentui/core-android-arm64` from pinned OpenTUI source with Zig and the
+Android NDK, and ships it as a checksum-verified release asset. No Linux
+prebuilt is aliased as Android and no ELF is rewritten.
+
+The library also disables Android heap pointer tagging in a constructor:
+Scudo's tagged pointers cannot survive Bun's number-based FFI pointers, which
+otherwise corrupts every heap pointer that crosses the FFI boundary. Build
+script and source patch live in `release/opentui-android/`; all pins are
+recorded in `release/port-manifest.json`.
+
 ## Termux TUI Defaults
 
 This port adjusts three mobile terminal behaviors by default:
@@ -115,7 +129,9 @@ bun-ffi --version
 ```
 
 The installer also runs a native OpenTUI `dlopen()` smoke test before reporting
-success.
+success. Release acceptance goes further: every candidate must render real
+frames through the packaged native library and draw the TUI input screen in a
+pseudo-terminal on a physical device before it can be promoted.
 
 ## Maintainer Flow
 
@@ -170,6 +186,12 @@ Upstream Cline:
 https://github.com/cline/cline
 ```
 
+Upstream OpenTUI (source of the Android native library build):
+
+```text
+https://github.com/sst/opentui
+```
+
 Downstream Bun FFI runtime:
 
 ```text
@@ -180,5 +202,6 @@ License:
 
 ```text
 Apache-2.0 for Cline
+MIT for OpenTUI; its LICENSE ships inside the Android native package
 Bun and linked-library notices are included in the Bun FFI runtime artifact
 ```
