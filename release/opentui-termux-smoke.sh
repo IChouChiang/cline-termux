@@ -37,8 +37,10 @@ ok() {
 	|| fail "the installed OpenTUI native package has no VERSION provenance; it is not the genuine Bionic build"
 
 info "Using Bun $("$BUN_BIN" --version) against $BUNDLE_DIR"
-mkdir -p "$HOME/tmp"
-SMOKE_SCRIPT="$(mktemp "$HOME/tmp/opentui-render-smoke.XXXXXX.mjs")"
+# The script must live inside the bundle: Bun resolves imports from the
+# script's directory and would otherwise auto-install an unpatched OpenTUI
+# from the registry. --no-install makes any such fallback fail loudly.
+SMOKE_SCRIPT="$(mktemp "$BUNDLE_DIR/.opentui-render-smoke.XXXXXX.mjs")"
 trap 'rm -f "$SMOKE_SCRIPT"' EXIT
 
 cat > "$SMOKE_SCRIPT" <<'EOF'
@@ -78,6 +80,6 @@ EOF
 
 (
 	cd "$BUNDLE_DIR"
-	"$BUN_BIN" "$SMOKE_SCRIPT"
+	"$BUN_BIN" --no-install "$SMOKE_SCRIPT"
 )
 ok "OpenTUI rendered real frames on Termux through the genuine Bionic library"

@@ -81,8 +81,10 @@ ok "Bun FFI loads the packaged OpenTUI renderer"
 
 # A dlopen probe is not a render test. Drive the real render path through
 # @opentui/core: memory output plus the NativeSpanFeed callback backend.
-mkdir -p "$HOME/tmp"
-RENDER_SMOKE="$(mktemp "$HOME/tmp/cline-termux-render.XXXXXX.mjs")"
+# The script must live inside the bundle: Bun resolves imports from the
+# script's directory and would otherwise auto-install an unpatched OpenTUI
+# from the registry. --no-install makes any such fallback fail loudly.
+RENDER_SMOKE="$(mktemp "$INSTALL_BASE/current/.render-smoke.XXXXXX.mjs")"
 cat > "$RENDER_SMOKE" <<'RENDER'
 const { TextRenderable } = await import("@opentui/core")
 const { createTestRenderer } = await import("@opentui/core/testing")
@@ -106,7 +108,7 @@ process.exit(0)
 RENDER
 (
 	cd "$INSTALL_BASE/current"
-	"$BUN_BASE/current/bun" "$RENDER_SMOKE" >/dev/null
+	"$BUN_BASE/current/bun" --no-install "$RENDER_SMOKE" >/dev/null
 ) || {
 	rm -f "$RENDER_SMOKE"
 	fail "OpenTUI did not render real frames through the packaged native library"
