@@ -85,13 +85,18 @@ json_field() {
 install_opentui_android_package() {
 	local manifest="$SCRIPT_DIR/port-manifest.json"
 	local repository asset release_tag asset_sha256 lib_sha256
+	local core_version android_version
 	repository="$(json_field "$manifest" openTuiAndroid.repository)"
 	release_tag="$(json_field "$manifest" openTuiAndroid.releaseTag)"
 	asset="$(json_field "$manifest" openTuiAndroid.asset)"
 	asset_sha256="$(json_field "$manifest" openTuiAndroid.assetSha256)"
 	lib_sha256="$(json_field "$manifest" openTuiAndroid.libSha256)"
+	core_version="$(json_field "$manifest" openTui.core)"
+	android_version="$(json_field "$manifest" openTuiAndroid.version)"
 	[ -n "$asset_sha256" ] || fail "openTuiAndroid.assetSha256 is not pinned"
 	[ -n "$lib_sha256" ] || fail "openTuiAndroid.libSha256 is not pinned"
+	[ "$android_version" = "$core_version" ] \
+		|| fail "openTuiAndroid.version ($android_version) does not match openTui.core ($core_version); rebuild the Bionic package with release/opentui-android/build-opentui-android.sh for the new OpenTUI"
 
 	local cache_dir="$SCRIPT_DIR/.tools/opentui-android"
 	local tarball=""
@@ -124,6 +129,8 @@ install_opentui_android_package() {
 		|| fail "checksum mismatch for the packaged libopentui.so"
 	[ -f "$package_dir/VERSION" ] \
 		|| fail "the Android OpenTUI package is missing its VERSION provenance"
+	grep -q "^version=$core_version\$" "$package_dir/VERSION" \
+		|| fail "the packaged VERSION provenance does not record version=$core_version; the pinned asset is stale for this OpenTUI"
 	info "Unpacked the checksum-verified Android OpenTUI package"
 }
 
