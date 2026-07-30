@@ -116,8 +116,10 @@ function writeRuntimePackage() {
 	const dependencies = Object.fromEntries(
 		runtimePackages.map((name) => [name, resolvedDependencyVersion(name)]),
 	);
-	dependencies["@opentui/core-android-arm64"] =
-		`npm:@opentui/core-linux-arm64@${dependencies["@opentui/core"]}`;
+	// @opentui/core-android-arm64 is intentionally not a dependency here.
+	// build-termux-release.sh unpacks the genuine Android/Bionic package
+	// (pinned by checksum in port-manifest.json openTuiAndroid) into
+	// node_modules after the install, because no registry publishes one.
 
 	writeJson(outputPath, {
 		name: "cline-termux",

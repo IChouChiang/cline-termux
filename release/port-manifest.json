@@ -41,7 +41,26 @@
     "dialog": "0.1.2",
     "corePatch": "patches/@opentui%2Fcore@0.4.3.patch",
     "dialogPatch": "patches/@opentui-ui%2Fdialog@0.1.2.patch",
-    "nativeCompatibility": "disable renderer threading on Android, resolve @opentui/core-android-arm64 when process.platform is android (0.4.x replaced the dynamic platform import with a hardcoded darwin/linux/win32 chain), and add DT_NEEDED libc.so to libopentui.so"
+    "nativeCompatibility": "disable renderer threading on Android, resolve @opentui/core-android-arm64 when process.platform is android (0.4.x replaced the dynamic platform import with a hardcoded darwin/linux/win32 chain), and ship a genuine Android/Bionic libopentui.so built from source (see openTuiAndroid)"
+  },
+  "openTuiAndroid": {
+    "package": "@opentui/core-android-arm64",
+    "repository": "IChouChiang/cline-termux",
+    "version": "0.4.3",
+    "revision": 1,
+    "releaseTag": "opentui-android-v0.4.3.1",
+    "asset": "opentui-core-android-arm64-v0.4.3.1.tgz",
+    "assetSha256": "ed7338f79f5e2a88efe6053b1f40f7bca1167a05cb2092430ab2b070f8540009",
+    "libSha256": "4a033120b2b0abac25e2912ddd0f7a430d6e8d4a2ffe70e38338005752f96a2e",
+    "opentuiRepository": "https://github.com/sst/opentui",
+    "opentuiTag": "v0.4.3",
+    "opentuiCommit": "5803b2cfa2942c45a3aedbb3601754e27f2cdc68",
+    "sourcePatch": "release/opentui-android/opentui-v0.4.3-android.patch",
+    "zig": "0.15.2",
+    "zigSha256": "02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239",
+    "ndk": "r27b",
+    "ndkSha256": "33e16af1a6bbabe12cad54b2117085c07eab7e4fa67cdd831805f0e94fd826c1",
+    "androidApiLevel": 24
   },
   "merge": {
     "allowedConflictPaths": [

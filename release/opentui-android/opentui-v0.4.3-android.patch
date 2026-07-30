@@ -1,0 +1,85 @@
+diff --git a/packages/core/src/zig/android_heap_compat.c b/packages/core/src/zig/android_heap_compat.c
+new file mode 100644
+index 0000000..16c2208
+--- /dev/null
++++ b/packages/core/src/zig/android_heap_compat.c
+@@ -0,0 +1,27 @@
++/*
++ * Android's Scudo allocator returns TBI-tagged pointers (nonzero top byte).
++ * Bun's FFI models native pointers as f64 JS numbers, which cannot represent
++ * 64-bit tagged addresses exactly, so any malloc-backed pointer that crosses
++ * the FFI boundary (Yoga nodes, NativeSpanFeed streams) comes back corrupted
++ * and the next native use or free aborts under Scudo's header checks.
++ *
++ * Downgrading the process heap tagging level is explicitly allowed at any
++ * time by bionic, and this constructor runs at dlopen before this library
++ * hands out any allocation.
++ *
++ * mallopt and the tagging constants are hidden by the NDK headers below API
++ * 26/31, so they are declared locally and mallopt is bound weakly: on the
++ * pre-Android-11 devices where the symbol or option is missing, heap tagging
++ * does not exist either, and the constructor degrades to a no-op.
++ */
++
++#define OPENTUI_M_BIONIC_SET_HEAP_TAGGING_LEVEL (-204)
++#define OPENTUI_M_HEAP_TAGGING_LEVEL_NONE 0
++
++extern int mallopt(int __option, int __value) __attribute__((weak));
++
++__attribute__((constructor)) static void opentui_android_disable_heap_tagging(void) {
++	if (&mallopt != 0) {
++		mallopt(OPENTUI_M_BIONIC_SET_HEAP_TAGGING_LEVEL, OPENTUI_M_HEAP_TAGGING_LEVEL_NONE);
++	}
++}
+diff --git a/packages/core/src/zig/build.zig b/packages/core/src/zig/build.zig
+index 0c82ba3..4f362e0 100644
+--- a/packages/core/src/zig/build.zig
++++ b/packages/core/src/zig/build.zig
+@@ -31,6 +31,12 @@ const SUPPORTED_TARGETS = [_]SupportedTarget{
+ 
+ const DEFAULT_MACOS_SDK_PATH = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk";
+ 
++// Android/Bionic support for the Termux port. Set with
++// -Dandroid-lib-dir=$NDK/toolchains/llvm/prebuilt/<host>/sysroot/usr/lib/aarch64-linux-android/<api>
++// so -ldl/-lm resolve against the NDK stub libraries; --libc must also point
++// at a libc file describing the same sysroot.
++var android_lib_dir: ?[]const u8 = null;
++
+ const LIB_NAME = "opentui";
+ const ROOT_SOURCE_FILE = "lib.zig";
+ 
+@@ -190,8 +196,24 @@ fn addNativeAudioDependencies(
+     switch (target.result.os.tag) {
+         .macos => addMacOSSystemLibraries(b, artifact, macos_sdk_path.?),
+         .linux => {
+-            artifact.linkSystemLibrary("dl");
+-            artifact.linkSystemLibrary("pthread");
++            if (target.result.abi.isAndroid()) {
++                // Bionic folds pthread into libc.so and ships dl and m as
++                // separate stub libraries in the NDK sysroot.
++                if (android_lib_dir) |dir| {
++                    artifact.addLibraryPath(.{ .cwd_relative = dir });
++                }
++                artifact.linkSystemLibrary("dl");
++                artifact.linkSystemLibrary("m");
++                // Scudo TBI-tagged pointers do not survive Bun's f64-based
++                // FFI pointer representation; see android_heap_compat.c.
++                artifact.addCSourceFile(.{
++                    .file = b.path("android_heap_compat.c"),
++                    .flags = &.{"-std=c99"},
++                });
++            } else {
++                artifact.linkSystemLibrary("dl");
++                artifact.linkSystemLibrary("pthread");
++            }
+         },
+         else => {},
+     }
+@@ -276,6 +298,7 @@ pub fn build(b: *std.Build) void {
+     const target_option = b.option([]const u8, "target", "Build for specific target (e.g., 'x86_64-linux-gnu.2.17').");
+     const build_all = b.option(bool, "all", "Build for all supported targets") orelse false;
+     const gpa_safe_stats = b.option(bool, "gpa-safe-stats", "Enable GPA safety checks for trustworthy allocator stats") orelse false;
++    android_lib_dir = b.option([]const u8, "android-lib-dir", "Android NDK sysroot library directory for the target API level");
+     const macos_sdk_path = resolveMacOSSDKPath(b);
+     const build_options = b.addOptions();
+     build_options.addOption(bool, "gpa_safe_stats", gpa_safe_stats);

@@ -2,10 +2,18 @@
 
 set -euo pipefail
 
-BUN_CANARY_DIR="${BUN_CANARY_DIR:-$HOME/.local/opt/bun-android-canary}"
-BUN_BIN="${BUN_BIN:-$BUN_CANARY_DIR/bun-linux-aarch64-android/bun}"
-SMOKE_DIR="${SMOKE_DIR:-$HOME/tmp/opentui-termux-alias-force}"
-OPENTUI_VERSION="${OPENTUI_VERSION:-0.4.3}"
+# Real OpenTUI render smoke against an installed Cline Termux bundle. Creates
+# a renderer through @opentui/core's test harness, renders a marker string,
+# and asserts it appears in the captured native frame — both with the memory
+# output backend and with the NativeSpanFeed (JS callback) backend.
+#
+# A dlopen probe alone is NOT a sufficient OpenTUI test on Android; this
+# script exists to exercise the genuine render path.
+
+INSTALL_BASE="${CLINE_TERMUX_INSTALL_BASE:-$PREFIX/opt/cline-termux}"
+BUN_BASE="${CLINE_TERMUX_BUN_INSTALL_BASE:-$PREFIX/opt/bun-android-ffi}"
+BUNDLE_DIR="${1:-$INSTALL_BASE/current}"
+BUN_BIN="${BUN_BIN:-$BUN_BASE/current/bun}"
 
 fail() {
 	echo "[fail] $*" >&2
@@ -20,43 +28,56 @@ ok() {
 	echo "[ok] $*"
 }
 
-[ -x "$BUN_BIN" ] || fail "Bun not found at $BUN_BIN. Run release/termux-v3-smoke.sh --install-bun first."
-command -v npm >/dev/null 2>&1 || fail "npm is required for the OpenTUI Termux alias smoke"
+[ -x "$BUN_BIN" ] || fail "Bun FFI runtime not found at $BUN_BIN"
+[ -d "$BUNDLE_DIR/node_modules/@opentui/core" ] \
+	|| fail "no installed @opentui/core under $BUNDLE_DIR"
+[ -f "$BUNDLE_DIR/node_modules/@opentui/core-android-arm64/libopentui.so" ] \
+	|| fail "no Android OpenTUI native library under $BUNDLE_DIR"
+[ -f "$BUNDLE_DIR/node_modules/@opentui/core-android-arm64/VERSION" ] \
+	|| fail "the installed OpenTUI native package has no VERSION provenance; it is not the genuine Bionic build"
 
-info "Using Bun $($BUN_BIN --version) at $BUN_BIN"
-info "Preparing OpenTUI smoke project at $SMOKE_DIR"
-rm -rf "$SMOKE_DIR"
-mkdir -p "$SMOKE_DIR/project"
-cd "$SMOKE_DIR/project"
+info "Using Bun $("$BUN_BIN" --version) against $BUNDLE_DIR"
+mkdir -p "$HOME/tmp"
+SMOKE_SCRIPT="$(mktemp "$HOME/tmp/opentui-render-smoke.XXXXXX.mjs")"
+trap 'rm -f "$SMOKE_SCRIPT"' EXIT
 
-cat > package.json <<EOF
-{
-  "type": "module",
-  "dependencies": {
-    "@opentui/core": "$OPENTUI_VERSION",
-    "@opentui/core-android-arm64": "npm:@opentui/core-linux-arm64@$OPENTUI_VERSION",
-    "@opentui/react": "$OPENTUI_VERSION",
-    "react": "19.2.4",
-    "react-reconciler": "0.32.0"
+cat > "$SMOKE_SCRIPT" <<'EOF'
+const { TextRenderable } = await import("@opentui/core")
+const { createTestRenderer } = await import("@opentui/core/testing")
+
+async function renderOnceWith(bufferedOutput, marker) {
+  const { renderer, renderOnce, captureCharFrame, flush } = await createTestRenderer({
+    width: 60,
+    height: 8,
+    bufferedOutput,
+  })
+  const text = new TextRenderable(renderer, { id: "smoke", content: marker })
+  renderer.root.add(text)
+  await renderOnce()
+  for (let i = 0; i < 5; i++) {
+    text.content = `${marker} frame ${i}`
+    await renderOnce()
   }
+  await flush()
+  const frame = captureCharFrame()
+  if (!frame.includes(`${marker} frame 4`)) {
+    console.error(`render smoke failed for ${bufferedOutput} output; frame was:`)
+    console.error(frame)
+    process.exit(1)
+  }
+  console.log(`render-ok ${bufferedOutput}`)
 }
+
+await renderOnceWith("memory", "bionic-render-memory")
+// A mock stdout that is not process.stdout routes through NativeSpanFeed,
+// which exercises native-to-JS callbacks and streaming writes.
+await renderOnceWith("stdout", "bionic-render-feed")
+console.log("OPENTUI-RENDER-SMOKE-OK")
+process.exit(0)
 EOF
 
-info "Installing OpenTUI with Android alias workaround"
-npm install --force --omit=dev > npm-install.log 2>&1 || {
-	cat npm-install.log >&2
-	fail "npm install failed"
-}
-
-info "Importing @opentui/core and @opentui/react with Bun"
-"$BUN_BIN" -e '
-const core = await import("@opentui/core")
-const react = await import("@opentui/react")
-console.log("core-ok " + Object.keys(core).slice(0, 8).join(","))
-console.log("react-ok " + Object.keys(react).slice(0, 8).join(","))
-' > import.log 2>&1 || {
-	cat import.log >&2
-	fail "OpenTUI import failed"
-}
-cat import.log
-ok "OpenTUI imports under Bun on Termux with the Android alias workaround"
+(
+	cd "$BUNDLE_DIR"
+	"$BUN_BIN" "$SMOKE_SCRIPT"
+)
+ok "OpenTUI rendered real frames on Termux through the genuine Bionic library"

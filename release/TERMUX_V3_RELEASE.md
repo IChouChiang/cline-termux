@@ -26,19 +26,24 @@ The Cline archive is built from:
 - the committed Cline/OpenTUI source tree
 - the repository `bun.lock`
 - the Bun version pinned by upstream Cline
-- the committed OpenTUI Android renderer-thread patch
+- the committed OpenTUI Android renderer-thread and native-resolver patches
 - the committed OpenTUI dialog patch
-- a pinned `patchelf` step that adds `DT_NEEDED libc.so` to `libopentui.so`
+- the checksum-pinned genuine Android/Bionic `@opentui/core-android-arm64`
+  package (built from OpenTUI source by
+  `release/opentui-android/build-opentui-android.sh` and published as the
+  `openTuiAndroid` GitHub release asset)
 - the published Bun Android FFI artifact
 
 A phone is a test target, not a build input. Runtime dependencies are resolved
-for Linux ARM64 on the workstation, and `@opentui/core-linux-arm64` is installed
-under the Android package alias expected by OpenTUI.
+for Linux ARM64 on the workstation; the OpenTUI native library alone is the
+Bionic build above. No Linux OpenTUI prebuilt is aliased as Android and no ELF
+is rewritten — `patchelf` remains in the pipeline only as a read-only verifier.
 
-The upstream Linux ARM64 OpenTUI ELF does not declare `libc.so` as a needed
-library. Android's linker consequently cannot resolve `getauxval` when Bun
-loads it directly. The builder adds that dependency deterministically and the
-phone gate verifies a real `dlopen()` before publication.
+The Bionic library additionally disables Android heap pointer tagging in a
+constructor: Scudo's TBI-tagged pointers cannot be represented by Bun's
+f64-based FFI pointers, which corrupts every malloc-backed pointer that
+crosses the FFI boundary (Yoga nodes, NativeSpanFeed streams). The device
+gates verify real rendered frames, not just a `dlopen()`.
 
 OpenTUI disables its native renderer thread on Linux. The Android patch extends
 that existing platform rule to Android, where enabling the thread prevents the

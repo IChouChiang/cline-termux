@@ -78,18 +78,53 @@ json_field() {
 	node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log(process.argv[2].split(".").reduce((value, key) => value[key], data))' "$1" "$2"
 }
 
-patch_android_alias_package_json() {
-	local package_json="$1"
-	node -e '
-const fs = require("fs")
-const file = process.argv[1]
-const pkg = JSON.parse(fs.readFileSync(file, "utf8"))
-pkg.name = "@opentui/core-android-arm64"
-pkg.description = "Prebuilt android-arm64 binaries for @opentui/core"
-pkg.os = ["android"]
-pkg.cpu = ["arm64"]
-fs.writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`)
-' "$package_json"
+# Fetches the genuine Android/Bionic @opentui/core-android-arm64 package
+# (built from source by release/opentui-android/build-opentui-android.sh and
+# published as a pinned GitHub release asset) and unpacks it into the staged
+# node_modules. Every byte is checksum-verified against port-manifest.json.
+install_opentui_android_package() {
+	local manifest="$SCRIPT_DIR/port-manifest.json"
+	local repository asset release_tag asset_sha256 lib_sha256
+	repository="$(json_field "$manifest" openTuiAndroid.repository)"
+	release_tag="$(json_field "$manifest" openTuiAndroid.releaseTag)"
+	asset="$(json_field "$manifest" openTuiAndroid.asset)"
+	asset_sha256="$(json_field "$manifest" openTuiAndroid.assetSha256)"
+	lib_sha256="$(json_field "$manifest" openTuiAndroid.libSha256)"
+	[ -n "$asset_sha256" ] || fail "openTuiAndroid.assetSha256 is not pinned"
+	[ -n "$lib_sha256" ] || fail "openTuiAndroid.libSha256 is not pinned"
+
+	local cache_dir="$SCRIPT_DIR/.tools/opentui-android"
+	local tarball=""
+	local candidate
+	for candidate in "$SCRIPT_DIR/dist/$asset" "$cache_dir/$asset"; do
+		if [ -f "$candidate" ] \
+			&& [ "$(sha256sum "$candidate" | awk '{print $1}')" = "$asset_sha256" ]; then
+			tarball="$candidate"
+			break
+		fi
+	done
+	if [ -z "$tarball" ]; then
+		command -v curl >/dev/null 2>&1 || fail "curl is required to fetch $asset"
+		mkdir -p "$cache_dir"
+		info "Downloading $asset from $repository@$release_tag..."
+		curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
+			--connect-timeout 15 --max-time 300 \
+			--output "$cache_dir/$asset" \
+			"https://github.com/$repository/releases/download/$release_tag/$asset"
+		tarball="$cache_dir/$asset"
+	fi
+	[ "$(sha256sum "$tarball" | awk '{print $1}')" = "$asset_sha256" ] \
+		|| fail "checksum mismatch for $asset"
+
+	local package_dir="$STAGE_DIR/node_modules/@opentui/core-android-arm64"
+	rm -rf "$package_dir"
+	mkdir -p "$package_dir"
+	tar xzf "$tarball" -C "$package_dir" --strip-components=1 package
+	[ "$(sha256sum "$package_dir/libopentui.so" | awk '{print $1}')" = "$lib_sha256" ] \
+		|| fail "checksum mismatch for the packaged libopentui.so"
+	[ -f "$package_dir/VERSION" ] \
+		|| fail "the Android OpenTUI package is missing its VERSION provenance"
+	info "Unpacked the checksum-verified Android OpenTUI package"
 }
 
 CLINE_VERSION="$(json_field "$CLI_DIR/package.json" version)"
@@ -170,6 +205,7 @@ node "$SCRIPT_DIR/port-metadata.mjs" runtime-package \
 		--os linux \
 		--backend copyfile
 )
+install_opentui_android_package
 
 [ -f "$STAGE_DIR/node_modules/@opentui/core-android-arm64/libopentui.so" ] \
 	|| fail "missing OpenTUI Android native library"
@@ -191,14 +227,10 @@ rg -q --glob 'index-*.js' \
 	"$STAGE_DIR/node_modules/@opentui/core" \
 	|| fail "the OpenTUI Android native-package resolver patch was not applied"
 
-patch_android_alias_package_json \
-	"$STAGE_DIR/node_modules/@opentui/core-android-arm64/package.json"
+# The genuine Bionic package replaces the Linux prebuilt entirely; nothing may
+# alias or rewrite it. patchelf remains as a read-only verifier.
 rm -rf "$STAGE_DIR/node_modules/@opentui/core-linux-arm64"
 OPENTUI_LIB="$STAGE_DIR/node_modules/@opentui/core-android-arm64/libopentui.so"
-if ! "$PATCHELF_BIN" --print-needed "$OPENTUI_LIB" | grep -Fxq libc.so; then
-	info "Adding the Android libc dependency to libopentui.so..."
-	"$PATCHELF_BIN" --add-needed libc.so "$OPENTUI_LIB"
-fi
 "$PATCHELF_BIN" --print-needed "$OPENTUI_LIB" | grep -Fxq libc.so \
 	|| fail "libopentui.so is missing its Android libc dependency"
 

@@ -62,18 +62,57 @@ fi
 $LAUNCHER --help >/dev/null
 ok "CLI metadata, version, and help"
 
+[ -f "$INSTALL_BASE/current/node_modules/@opentui/core-android-arm64/VERSION" ] \
+	|| fail "the packaged OpenTUI native library has no VERSION provenance; it is not the genuine Bionic build"
+ok "Packaged OpenTUI native library carries build provenance"
+
 (
 	cd "$INSTALL_BASE/current"
 	"$BUN_BASE/current/bun" -e '
 import { dlopen } from "bun:ffi"
 const lib = dlopen(
   "./node_modules/@opentui/core-android-arm64/libopentui.so",
-  { createRenderer: { args: ["u32", "u32", "bool", "bool"], returns: "ptr" } },
+  { createRenderer: { args: ["u32", "u32", "u8", "u8", "ptr"], returns: "ptr" } },
 )
 if (!lib.symbols.createRenderer) process.exit(1)
 ' >/dev/null
 )
 ok "Bun FFI loads the packaged OpenTUI renderer"
+
+# A dlopen probe is not a render test. Drive the real render path through
+# @opentui/core: memory output plus the NativeSpanFeed callback backend.
+mkdir -p "$HOME/tmp"
+RENDER_SMOKE="$(mktemp "$HOME/tmp/cline-termux-render.XXXXXX.mjs")"
+cat > "$RENDER_SMOKE" <<'RENDER'
+const { TextRenderable } = await import("@opentui/core")
+const { createTestRenderer } = await import("@opentui/core/testing")
+for (const bufferedOutput of ["memory", "stdout"]) {
+  const marker = `render-${bufferedOutput}`
+  const { renderer, renderOnce, captureCharFrame, flush } = await createTestRenderer({
+    width: 60,
+    height: 8,
+    bufferedOutput,
+  })
+  const text = new TextRenderable(renderer, { id: "smoke", content: marker })
+  renderer.root.add(text)
+  await renderOnce()
+  await flush()
+  if (!captureCharFrame().includes(marker)) {
+    console.error(`no rendered frame for ${bufferedOutput} output`)
+    process.exit(1)
+  }
+}
+process.exit(0)
+RENDER
+(
+	cd "$INSTALL_BASE/current"
+	"$BUN_BASE/current/bun" "$RENDER_SMOKE" >/dev/null
+) || {
+	rm -f "$RENDER_SMOKE"
+	fail "OpenTUI did not render real frames through the packaged native library"
+}
+rm -f "$RENDER_SMOKE"
+ok "OpenTUI rendered real frames through the packaged native library"
 
 rg -q --glob 'index-*.js' \
 	'process\.platform === "linux" \|\| process\.platform === "android"' \
