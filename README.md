@@ -1,5 +1,9 @@
 # Cline Termux
 
+[![Latest release](https://img.shields.io/github/v/release/IChouChiang/cline-termux?label=release)](https://github.com/IChouChiang/cline-termux/releases/latest)
+[![Platform](https://img.shields.io/badge/platform-Android%20aarch64%20(Termux)-3ddc84)](https://termux.dev)
+[![License](https://img.shields.io/github/license/IChouChiang/cline-termux)](LICENSE)
+
 Unofficial native Termux port of the Cline CLI TUI for Android `aarch64`.
 
 This repository packages the upstream Cline CLI for Termux and adds the small
