@@ -7,6 +7,7 @@
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import {
+	createRestoredCheckpointMetadata,
 	createUserInstructionConfigService,
 	getProviderAuthStorageId,
 	type PreparedRemoteConfigCoreIntegration,
@@ -16,7 +17,7 @@ import {
 	type UserInstructionConfigService,
 } from "@cline/core"
 import { formatDisplayUserInput, type RemoteConfig, type RemoteConfigBundle } from "@cline/shared"
-import type { ApiConfiguration, ModelInfo } from "@shared/api"
+import type { ApiConfiguration } from "@shared/api"
 import type { ChatContent } from "@shared/ChatContent"
 import { CLINE_ACCOUNT_AUTH_ERROR_MESSAGE } from "@shared/ClineAccount"
 import { mentionRegexGlobal } from "@shared/context-mentions"
@@ -49,6 +50,7 @@ import { isClineManagedProvider } from "@/shared/utils/cline"
 import { arePathsEqual, getDesktopDir } from "@/utils/path"
 import { ClineAccountService } from "./account-service"
 import { AuthService, LogoutReason } from "./auth-service"
+import { BUILTIN_SLASH_COMMANDS } from "./builtin-slash-commands"
 import { buildStartSessionInput, createHistoryItemFromSession } from "./cline-session-factory"
 import { MessageTranslatorState, reshapeErrorForWebview } from "./message-translator"
 import { createProviderCatalog } from "./model-catalog/catalog"
@@ -89,9 +91,11 @@ import { isToolAutoApproved } from "./sdk-tool-policies"
 import {
 	extractSdkUserText,
 	findSdkUserMessageIndexByOrdinal,
+	getSdkCheckpointRunCountForMessageIndex,
 	isSyntheticSdkUserMessage,
 	type SdkUserMessage,
 } from "./sdk-user-message-mapping"
+import { buildDisabledWorkflowNames, expandSlashCommands } from "./slash-command-expansion"
 import { StatePostDebouncer } from "./state-post-debouncer"
 import { createTaskProxy, type TaskProxy } from "./task-proxy"
 import { syncTelemetrySettingFromSharedGlobalSettings } from "./telemetry-settings-sync"
@@ -282,8 +286,13 @@ export class Controller {
 		this.ocaAuthService = OcaAuthService.initialize(this)
 		this.accountService = ClineAccountService.getInstance()
 
-		// Initialize message translator state
-		this.messageTranslatorState = new MessageTranslatorState(undefined, () => this.getActiveProviderId())
+		// Initialize message translator state. The mode getter styles the inferred turn-final
+		// completion row (plan → yellow plan box, act → green completion box).
+		this.messageTranslatorState = new MessageTranslatorState(
+			undefined,
+			() => this.getActiveProviderId(),
+			() => (this.stateManager.getGlobalSettingsKey("mode") === "plan" ? "plan" : "act"),
+		)
 		// Authoritative UI-mode tracker, sharing the one id/seq/epoch authority.
 		this.turnStateTracker = new TurnStateTracker(this.messageTranslatorState.getMinter())
 		this.messages = new SdkMessageCoordinator({
@@ -552,6 +561,7 @@ export class Controller {
 				this.messageTranslatorState.clearApprovedToolMessageTs()
 				this.messageTranslatorState.getMinter().bumpEpoch()
 			},
+			setTurnPhase: (phase, anchorTs) => this.turnStateTracker.set(phase, anchorTs),
 			postStateToWebview: () => this.postStateToWebview(),
 		})
 		this.taskStart = new SdkTaskStartCoordinator({
@@ -602,6 +612,7 @@ export class Controller {
 			getTask: () => this.task,
 			postStateToWebview: () => this.postStateToWebview(),
 			setTurnPhase: (phase, anchorTs) => this.turnStateTracker.set(phase, anchorTs),
+			getTurnPhase: () => this.turnStateTracker.currentPhase,
 			captureProviderApiError: (event) => this.captureProviderFailure(event),
 			beginProviderFailureTelemetryTurn: () => this.beginProviderFailureTelemetryTurn(),
 		})
@@ -835,9 +846,13 @@ export class Controller {
 	}
 
 	/**
-	 * Expand a leading `/workflow` or `/skill` slash command into its instruction
-	 * body. Mirrors the CLI's `buildUserInputMessage`. Returns the input unchanged
-	 * if it is not a known command or expansion fails.
+	 * Expand a `/workflow` or `/skill` slash command into its instruction body.
+	 * Serves the same purpose as the CLI's `buildUserInputMessage`, but is more
+	 * permissive than the SDK's leading-only resolver: it accepts the legacy
+	 * `/my-workflow.md` spelling the webview autocomplete inserts, matches
+	 * commands mid-message (anything the chat input highlights as a command),
+	 * and honors the user's workflow enable/disable toggles. Returns the input
+	 * unchanged if no known command matches or expansion fails.
 	 */
 	private async resolveSlashCommands(text: string): Promise<string> {
 		if (this.isDisposed) {
@@ -846,7 +861,21 @@ export class Controller {
 		try {
 			const workspaceRoot = await this.getWorkspaceRoot()
 			const service = await this.ensureUserInstructionService(workspaceRoot)
-			return service.resolveRuntimeSlashCommand(text)
+			const remoteWorkflows = this.stateManager.getRemoteConfigSettings()?.remoteGlobalWorkflows ?? []
+			const workflowRecords = service
+				.listRecords("workflow")
+				.map((record) => ({ name: record.item.name, filePath: record.filePath }))
+			const disabledWorkflowNames = buildDisabledWorkflowNames({
+				records: workflowRecords,
+				globalToggles: this.stateManager.getGlobalSettingsKey("globalWorkflowToggles"),
+				workspaceToggles: this.stateManager.getWorkspaceStateKey("workflowToggles"),
+				remoteToggles: this.stateManager.getGlobalStateKey("remoteWorkflowToggles"),
+				remoteAlwaysEnabledNames: remoteWorkflows.filter((workflow) => workflow.alwaysEnabled).map((w) => w.name),
+			})
+			return expandSlashCommands(text, [...service.listRuntimeCommands(), ...BUILTIN_SLASH_COMMANDS], {
+				disabledWorkflowNames,
+				workflowRecords,
+			})
 		} catch (error) {
 			Logger.warn("[SdkController] Slash command resolution failed, using raw text:", error)
 			return text
@@ -1297,6 +1326,12 @@ export class Controller {
 		this.turnStateTracker.set("streaming")
 		// Clear the previous turn's completion signal so this new turn's phase is computed fresh.
 		this.messageTranslatorState.clearTurnOutcome()
+		// The webview only learns the phase through a full state post. Without one here it would
+		// keep the stale terminal phase (and hide the thinking indicator) until the first session
+		// event of the new turn posts state — a visible delay after every follow-up/approval.
+		this.postStateToWebview().catch((error) => {
+			Logger.error("[SdkController] Failed to post state after askResponse phase change:", error)
+		})
 		await this.followups.askResponse(prompt, images, files, this.task?.taskState?.askResponse, turnStateBefore.phase)
 	}
 
@@ -1331,7 +1366,7 @@ export class Controller {
 		const userOrdinal = clineMessages
 			.slice(0, targetIndex + 1)
 			.filter((message) => message.type === "say" && (message.say === "task" || message.say === "user_feedback")).length
-		const checkpointRunCount = getCheckpointRunCountForMessage(clineMessages, targetIndex)
+		const canRestoreWorkspace = getCheckpointRunCountForMessage(clineMessages, targetIndex) !== undefined
 		const sourceSessionId = activeSession?.sessionId ?? currentTask.taskId
 		let sdkMessages: SdkUserMessage[]
 		let tempHost: VscodeSessionHost | undefined
@@ -1342,6 +1377,7 @@ export class Controller {
 			if (sdkTargetIndex === -1) {
 				throw new Error("Could not map edited message to persisted conversation history")
 			}
+			const checkpointRunCount = getSdkCheckpointRunCountForMessageIndex(sdkMessages, sdkTargetIndex)
 
 			const initialMessages = sdkMessages.slice(0, sdkTargetIndex) as Parameters<
 				VscodeSessionHost["start"]
@@ -1377,6 +1413,9 @@ export class Controller {
 				sessionMetadata: {
 					title: historyTitle,
 					modelId: config.modelId,
+					...(checkpointRunCount
+						? { checkpoint: createRestoredCheckpointMetadata(sessionRecord, checkpointRunCount) }
+						: {}),
 				},
 			}
 
@@ -1384,7 +1423,7 @@ export class Controller {
 				if (activeSession?.isRunning) {
 					throw new Error("Wait for the current run to finish before restoring workspace changes")
 				}
-				if (checkpointRunCount === undefined) {
+				if (!canRestoreWorkspace || checkpointRunCount === undefined) {
 					throw new Error("Workspace restore is only available for messages that started an agent run")
 				}
 				await sessionHost.restore({
@@ -1546,14 +1585,18 @@ export class Controller {
 	 * 1. Silently tear down the active session (unsubscribe + stop in background)
 	 * 2. Create the new task proxy with loaded messages BEFORE any state push
 	 * 3. Only then push state to the webview
+	 *
+	 * Delegates straight to the coordinator (including the history lookup) so
+	 * the "latest selection wins" generation is allocated synchronously at the
+	 * moment of the request — awaiting the lookup here first would let a
+	 * stalled older request grab a NEWER generation than a later selection and
+	 * replace it.
 	 */
 	async showTaskWithId(taskId: string): Promise<TaskResponse> {
-		const historyItem = await this.taskHistory.findHistoryItem(taskId)
+		const historyItem = await this.taskControl.showTaskWithId(taskId)
 		if (!historyItem) {
 			throw new Error(`Task not found in history: ${taskId}`)
 		}
-
-		await this.taskControl.showTaskWithId(taskId, { skipHistoryLookup: true })
 		return historyItemToTaskResponse(historyItem)
 	}
 
@@ -1579,6 +1622,8 @@ export class Controller {
 	// ---- Auth callbacks ----
 
 	async handleSignOut(): Promise<void> {
+		const sessionProviderId = this.getSessionProviderId() ?? this.getActiveProviderId()
+		await this.taskControl.cancelClineTaskOnSignOut(isClineManagedProvider(sessionProviderId))
 		await this.authService.handleDeauth(LogoutReason.USER_INITIATED)
 		clearRemoteConfig()
 		await this.setRemoteConfigCoreIntegration(undefined)
@@ -1633,11 +1678,6 @@ export class Controller {
 		await this.authService.handleHicapCallback(code)
 		this.persistProviderApiKeyFromState("hicap")
 		await this.postStateToWebview()
-	}
-
-	async readOpenRouterModels(): Promise<Record<string, ModelInfo> | undefined> {
-		stubWarn("readOpenRouterModels")
-		return undefined
 	}
 
 	async getTaskHistory(request: GetTaskHistoryRequest): Promise<TaskHistoryArray> {
@@ -1759,16 +1799,9 @@ export class Controller {
 	}
 
 	async exportTaskWithId(id: string): Promise<void> {
-		const historyItem = (await this.taskHistory.listHistory({ hydrate: false })).find((item) => item.sessionId === id)
-		if (!historyItem) {
-			throw new Error(`Task not found in history: ${id}`)
-		}
-
-		const taskDirPath = historyItem.messagesPath
-			? path.dirname(historyItem.messagesPath)
-			: this.taskHistory.getLegacyTaskDirPath(id)
+		const taskDirPath = await this.taskHistory.getTaskDirPath(id)
 		if (!taskDirPath) {
-			throw new Error(`Task history item has no artifact path: ${id}`)
+			throw new Error(`Task not found in history: ${id}`)
 		}
 
 		await fs.access(taskDirPath)
@@ -1918,6 +1951,11 @@ export class Controller {
 				backgroundCommandRunning: this.backgroundCommandRunning,
 				backgroundCommandTaskId: this.backgroundCommandTaskId,
 				foregroundCommandRunning: this.foregroundCommands.isRunning,
+				// Without this the webview always receives workspaceRoots: [] on the
+				// SDK path (classic Controller exposes a public workspaceManager;
+				// SdkController builds one lazily). The task-header working-directory
+				// badge and anything else keyed on workspaceRoots depend on it.
+				workspaceManager: await this.ensureWorkspaceManager(),
 			})
 			const sdkTaskHistory = (await this.taskHistory.listHistory({ limit: 100, hydrate: false }))
 				.map(sessionHistoryRecordToHistoryItem)
