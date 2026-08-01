@@ -10,6 +10,8 @@ This repository packages the upstream Cline CLI for Termux and adds the small
 runtime/UX pieces needed for a phone-native terminal experience. It is not an
 official Cline release.
 
+![Cline TUI running natively in Termux on a Samsung S25 Ultra](docs/images/cline-termux-tui.png)
+
 Current port:
 
 ```text
