@@ -55,16 +55,15 @@ diff --git a/dist/dialog-container-Btgzkwy7.mjs b/dist/dialog-container-Btgzkwy7
 diff --git a/dist/react.mjs b/dist/react.mjs
 --- a/dist/react.mjs
 +++ b/dist/react.mjs
-@@ -169,7 +169,7 @@
+@@ -169,7 +169,6 @@
  		renderer.root.add(container);
  		return () => {
  			container.destroyRecursively();
 -			renderer.root.remove(container.id);
-+			renderer.root.remove(container);
  			manager.destroy();
  		};
  	}, [
-@@ -178,8 +178,18 @@
+@@ -178,8 +177,18 @@
  		renderer
  	]);
  	useEffect(() => {
@@ -98,12 +97,11 @@ diff --git a/dist/solid.mjs b/dist/solid.mjs
  		unstyled: props.unstyled
  	});
  	renderer.root.add(container);
-@@ -192,12 +195,17 @@
+@@ -192,12 +195,16 @@
  		unsubscribe();
  		portalItemCache.clear();
  		container.destroyRecursively();
 -		renderer.root.remove(container.id);
-+		renderer.root.remove(container);
  		manager.destroy();
  	});
  	createEffect(() => {

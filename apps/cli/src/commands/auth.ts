@@ -13,7 +13,6 @@ import { Command } from "commander";
 import open from "open";
 import React from "react";
 import { disableOpenTuiGraphicsProbe } from "../tui/opentui-env";
-import { getTermuxRendererOptions } from "../tui/utils/termux-renderer-options";
 import {
 	getPersistedProviderApiKey,
 	isOAuthProvider,
@@ -24,6 +23,9 @@ import {
 } from "../utils/provider-auth";
 import { listLocalProviders } from "../utils/provider-catalog";
 import { identifyTelemetryAccount } from "../utils/telemetry";
+// Termux port import; kept out of sorted order, below the upstream imports, so
+// upstream churn in the import block above merges without conflicts.
+import { getTermuxRendererOptions } from "../tui/utils/termux-renderer-options";
 
 export {
 	getPersistedProviderApiKey,
