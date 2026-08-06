@@ -1,7 +1,7 @@
 diff --git a/dist/dialog-container-Btgzkwy7.mjs b/dist/dialog-container-Btgzkwy7.mjs
 --- a/dist/dialog-container-Btgzkwy7.mjs
 +++ b/dist/dialog-container-Btgzkwy7.mjs
-@@ -510,6 +510,11 @@
+@@ -510,6 +510,30 @@
  	if (defaultWidth === -1) return terminalWidth ? terminalWidth - FULL_SIZE_OFFSET : 80;
  	return defaultWidth;
  }
@@ -10,21 +10,40 @@ diff --git a/dist/dialog-container-Btgzkwy7.mjs b/dist/dialog-container-Btgzkwy7
 +	if (value === "end") return "flex-end";
 +	return "center";
 +}
++function isTermuxRuntime() {
++	if (typeof process === "undefined" || !process.env) return false;
++	const env = process.env;
++	return Boolean(
++		env.TERMUX_VERSION ||
++			env.TERMUX_APP_PACKAGE ||
++			(env.PREFIX || "").includes("/com.termux/") ||
++			(env.HOME || "").includes("/com.termux/"),
++	);
++}
++function getTermuxDialogSafeAreaBottom() {
++	if (!isTermuxRuntime()) return undefined;
++	const raw = (process.env.CLINE_TUI_TERMUX_DIALOG_SAFE_AREA_BOTTOM || "").trim();
++	if (!raw) return "15%";
++	if (/^\d+(?:\.\d+)?%$/.test(raw)) return raw;
++	const rows = Number(raw);
++	if (!Number.isFinite(rows) || rows < 0) return "15%";
++	return Math.floor(rows);
++}
  
  //#endregion
  //#region src/renderables/dialog.ts
-@@ -611,7 +616,9 @@
+@@ -611,7 +635,9 @@
  			height: ctx.height,
  			zIndex: DIALOG_Z_INDEX,
  			alignItems: "center",
 -			justifyContent: "center",
 +			justifyContent: getDialogVerticalAlign(options.verticalAlign),
 +			paddingTop: options.safeAreaTop ?? 0,
-+			paddingBottom: options.safeAreaBottom ?? 0,
++			paddingBottom: options.safeAreaBottom ?? getTermuxDialogSafeAreaBottom() ?? 0,
  			backgroundColor: "transparent",
  			visible: false
  		});
-@@ -677,7 +684,7 @@
+@@ -677,7 +703,7 @@
  		const renderable = this._dialogRenderables.get(id);
  		if (renderable) {
  			this._dialogRenderables.delete(id);
@@ -33,7 +52,7 @@ diff --git a/dist/dialog-container-Btgzkwy7.mjs b/dist/dialog-container-Btgzkwy7
  			renderable.destroyRecursively();
  			this.updateBackdropVisibility();
  			this.updateBackdropStyle();
-@@ -706,6 +713,18 @@
+@@ -706,6 +732,18 @@
  	set closeOnClickOutside(value) {
  		this._options.closeOnClickOutside = value;
  	}
@@ -47,7 +66,7 @@ diff --git a/dist/dialog-container-Btgzkwy7.mjs b/dist/dialog-container-Btgzkwy7
 +	}
 +	set safeAreaBottom(value) {
 +		this._options.safeAreaBottom = value;
-+		this.paddingBottom = value ?? 0;
++		this.paddingBottom = value ?? getTermuxDialogSafeAreaBottom() ?? 0;
 +	}
  	set backdropColor(value) {
  		this._options.backdropColor = value;

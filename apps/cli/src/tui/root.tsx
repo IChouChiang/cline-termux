@@ -59,7 +59,6 @@ import { isProviderConfigured } from "./utils/provider-configured";
 import { createSelectionCopyHandler } from "./utils/selection-copy";
 import type { LocalSlashCommandInvocation } from "./utils/skill-command-input";
 import { deriveTerminalTitle } from "./utils/terminal-title";
-import { getTermuxDialogSafeAreaOptions } from "./utils/termux-dialog-safe-area";
 import { shouldUseTermuxTranscriptTouchScroll } from "./utils/termux-touch-scroll";
 import { ChatView } from "./views/chat-view";
 import { HomeView } from "./views/home-view";
@@ -942,13 +941,9 @@ export function Root(
 		}),
 		[props.terminalBackground, props.terminalForeground],
 	);
-	const dialogSafeAreaOptions = useMemo(
-		() => getTermuxDialogSafeAreaOptions(),
-		[],
-	);
 	return (
 		<TerminalColorsContext value={terminalColors}>
-			<DialogProvider size="medium" {...dialogSafeAreaOptions}>
+			<DialogProvider size="medium">
 				<SessionProvider
 					config={props.config}
 					initialEntries={initialEntries}
