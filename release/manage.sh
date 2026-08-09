@@ -2,6 +2,13 @@
 
 set -euo pipefail
 
+# The manager parses JSON by piping it through node. When the calling shell
+# exports FORCE_COLOR (Claude Code and some terminals do), node's console.log
+# wraps non-string values in ANSI codes, so a printed boolean stops comparing
+# equal to `true`/`false` and state checks fail on healthy releases.
+export FORCE_COLOR=0
+export NO_COLOR=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MANIFEST="$SCRIPT_DIR/port-manifest.json"
