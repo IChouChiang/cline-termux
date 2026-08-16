@@ -71,10 +71,14 @@ function updatePortMetadata() {
 		"",
 	);
 
-	rootPackage.patchedDependencies = termuxPatchedDependencies(
-		coreVersion,
-		dialogVersion,
-	);
+	// Layer the port's patches on top of whatever upstream declares instead of
+	// replacing the map. Upstream ships its own patchedDependencies (currently
+	// ollama-ai-provider-v2), and a wholesale replacement silently dropped them
+	// from the build even though the patch files merge into patches/.
+	rootPackage.patchedDependencies = {
+		...rootPackage.patchedDependencies,
+		...termuxPatchedDependencies(coreVersion, dialogVersion),
+	};
 	writeJson(rootPackagePath, rootPackage);
 
 	manifest.upstream.tag = upstreamTag;
