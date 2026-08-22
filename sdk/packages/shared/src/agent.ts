@@ -5,6 +5,7 @@
  *
  */
 
+import type { GeneratedMedia } from "./llms/media";
 import type { ModelInfo } from "./llms/model-info";
 import type {
 	ToolApprovalRequest,
@@ -46,6 +47,11 @@ export interface AgentFilePart {
 	content: string;
 }
 
+export interface AgentMediaPart {
+	type: "media";
+	media: GeneratedMedia;
+}
+
 export interface AgentToolCallPart {
 	type: "tool-call";
 	toolCallId: string;
@@ -83,6 +89,7 @@ export type AgentMessagePart =
 	| AgentReasoningPart
 	| AgentImagePart
 	| AgentFilePart
+	| AgentMediaPart
 	| AgentToolCallPart
 	| AgentToolResultPart;
 
@@ -265,6 +272,7 @@ export type ProviderErrorClass = "context_window_exceeded" | "unknown";
 
 export type AgentModelEvent =
 	| { type: "text-delta"; text: string }
+	| { type: "media"; media: GeneratedMedia }
 	| {
 			type: "reasoning-delta";
 			text: string;
@@ -285,23 +293,15 @@ export type AgentModelEvent =
 	| {
 			type: "tool-result";
 			toolCallId: string;
-			toolName: import("./llms/model-tools").ModelToolName;
+			/**
+			 * Declared model tools carry a ModelToolName; provider-executed tools
+			 * (e.g. the Claude Code CLI's own tools) carry arbitrary names.
+			 */
+			toolName: string;
 			input?: unknown;
 			output: unknown;
 			isError?: boolean;
 			execution: ModelToolExecution;
-	  }
-	| {
-			/**
-			 * A model-generated file (e.g. an image from an image-output
-			 * model). `data` is base64-encoded file data (or a URL for
-			 * URL-referenced files). Runtimes assemble it into the assistant
-			 * message (`AgentImagePart` for `image/*`, `AgentFilePart`
-			 * otherwise) so a file-only turn is not treated as empty.
-			 */
-			type: "file";
-			data: string;
-			mediaType: string;
 	  }
 	| {
 			type: "usage";
@@ -370,6 +370,13 @@ export interface AgentBeforeToolResult {
 	reason?: string;
 	input?: unknown;
 	policy?: ToolPolicy;
+	/**
+	 * Text to inject into the conversation as hook context (e.g. a hook's
+	 * `contextModification`). Collected across hooks and appended after this
+	 * iteration's tool results as a `<hook_context>` user message, so the
+	 * model sees it on the next request.
+	 */
+	appendContext?: string;
 }
 
 export interface AgentAfterToolContext {
@@ -387,6 +394,13 @@ export interface AgentAfterToolResult {
 	stop?: boolean;
 	reason?: string;
 	result?: AgentToolResult;
+	/**
+	 * Text to inject into the conversation as hook context (e.g. a hook's
+	 * `contextModification`). Collected across hooks and appended after this
+	 * iteration's tool results as a `<hook_context>` user message, so the
+	 * model sees it on the next request.
+	 */
+	appendContext?: string;
 }
 
 export interface AgentRunLifecycleContext {
@@ -462,6 +476,11 @@ export interface AgentRuntimePlugin {
 // =============================================================================
 
 export interface AgentRuntimeConfig {
+	/**
+	 * Stable end-user distinct ID used for provider and observability metadata.
+	 * This is intentionally separate from the host-owned session id.
+	 */
+	distinctId?: string;
 	/**
 	 * Core/hub runtime session identifier.
 	 *
@@ -562,6 +581,12 @@ export type AgentRuntimeEvent =
 			accumulatedText: string;
 			redacted?: boolean;
 			metadata?: unknown;
+	  }
+	| {
+			type: "assistant-media";
+			snapshot: AgentRuntimeStateSnapshot;
+			iteration: number;
+			media: GeneratedMedia;
 	  }
 	| {
 			type: "assistant-message";

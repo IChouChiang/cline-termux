@@ -4,6 +4,11 @@ import path from "node:path";
 import * as LlmsModels from "@cline/llms";
 import { CLINE_DEFAULT_MODEL_ID } from "@cline/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	FALLBACK_CLINE_RECOMMENDED_MODELS,
+	getCachedClineRecommendedModels,
+	resetClineRecommendedModelsCacheForTests,
+} from "../llms/cline-recommended-models";
 import { clearLiveModelsCatalogCache } from "../llms/provider-defaults";
 import { ProviderSettingsManager } from "../storage/provider-settings-manager";
 import {
@@ -15,14 +20,19 @@ import {
 } from "./local-provider-registry";
 import {
 	addLocalProvider,
+	createConfiguredStreamingTranscriptionSession,
 	deleteLocalProvider,
 	getLocalProviderModels,
+	isDedicatedTranscriptionModel,
 	listLocalProviders,
 	markLocalProviderEnabled,
 	normalizeOAuthProvider,
 	refreshProviderModelsFromSource,
 	resolveLocalClineAuthToken,
 	saveLocalProviderSettings,
+	saveVoiceInputSettings,
+	transcribeConfiguredVoiceInput,
+	transcribeLocalAudio,
 	updateLocalProvider,
 } from "./local-provider-service";
 
@@ -52,6 +62,7 @@ function makeTempManager(): {
 
 afterEach(() => {
 	clearLiveModelsCatalogCache();
+	resetClineRecommendedModelsCacheForTests();
 	LlmsModels.resetRegistry();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
@@ -354,7 +365,10 @@ describe("addLocalProvider – model ID parsing via modelsSourceUrl", () => {
 
 		const { models } = await getLocalProviderModels("cline-pass");
 
-		expect(fetchMock).toHaveBeenCalledTimes(2);
+		// models.dev, the recommended-models feed via the live catalog, and
+		// the recommended-models feed again for the featured-tier overlay
+		// (separately cached; both caches are cold here).
+		expect(fetchMock).toHaveBeenCalledTimes(3);
 		expect(models.map((model) => model.id)).toEqual(
 			expect.arrayContaining([
 				"cline-pass/live-pass-model",
@@ -407,7 +421,10 @@ describe("addLocalProvider – model ID parsing via modelsSourceUrl", () => {
 
 		const { models } = await getLocalProviderModels("cline-pass");
 
-		expect(fetchMock).toHaveBeenCalledTimes(2);
+		// models.dev, the recommended-models feed via the live catalog, and
+		// the recommended-models feed again for the featured-tier overlay
+		// (separately cached; both caches are cold here).
+		expect(fetchMock).toHaveBeenCalledTimes(3);
 		expect(models.map((model) => model.id)).toContain(
 			"cline-pass/mimo-v2.5-pro",
 		);
@@ -761,6 +778,22 @@ describe("addLocalProvider – capabilities", () => {
 		});
 	});
 
+	it("preserves operation routing facts for provider catalog consumers", () => {
+		expect(
+			toProviderModel("realtime-whisper", {
+				name: "Realtime Whisper",
+				operation: "transcription",
+				operationModes: ["streaming"],
+				modalities: { input: ["audio"], output: ["text"] },
+			}),
+		).toMatchObject({
+			operation: "transcription",
+			operationModes: ["streaming"],
+			inputModalities: ["audio"],
+			outputModalities: ["text"],
+		});
+	});
+
 	it("sets supportsVision and supportsAttachments when capability is 'vision'", async () => {
 		await addLocalProvider(manager, {
 			providerId: "vision-provider",
@@ -872,6 +905,184 @@ describe("addLocalProvider – capabilities", () => {
 	});
 });
 
+describe("audio transcription", () => {
+	let manager: ProviderSettingsManager;
+	let cleanup: () => void;
+
+	beforeEach(async () => {
+		({ manager, cleanup } = makeTempManager());
+		await addLocalProvider(manager, {
+			providerId: "audio-provider",
+			name: "Audio Provider",
+			baseUrl: "https://audio.example.invalid/v1",
+			apiKey: "audio-key",
+			models: ["whisper-large-v3"],
+		});
+		LlmsModels.registerModel("audio-provider", "whisper-large-v3", {
+			id: "whisper-large-v3",
+			name: "Whisper Large v3",
+			operation: "transcription",
+			operationModes: ["batch"],
+			modalities: { input: ["audio"], output: ["text"] },
+		});
+	});
+
+	afterEach(() => cleanup());
+
+	it("recognizes only the explicit transcription operation", () => {
+		expect(
+			isDedicatedTranscriptionModel({
+				operation: "transcription",
+			}),
+		).toBe(true);
+		expect(
+			isDedicatedTranscriptionModel({
+				operation: "speech-generation",
+			}),
+		).toBe(false);
+		expect(
+			isDedicatedTranscriptionModel({
+				operation: "language",
+			}),
+		).toBe(false);
+	});
+
+	it("transcribes with the configured provider and requested model", async () => {
+		const transcribeSpy = vi
+			.spyOn(LlmsModels, "transcribeAudio")
+			.mockResolvedValue({ text: "transcribed text" });
+
+		await expect(
+			transcribeLocalAudio(manager, {
+				providerId: "audio-provider",
+				modelId: "whisper-large-v3",
+				audio: new Uint8Array([1, 2, 3]),
+				mediaType: "audio/webm",
+			}),
+		).resolves.toEqual({ text: "transcribed text" });
+		expect(transcribeSpy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				modelId: "whisper-large-v3",
+				audio: new Uint8Array([1, 2, 3]),
+				mediaType: "audio/webm",
+				providerConfig: expect.objectContaining({
+					providerId: "audio-provider",
+					apiKey: "audio-key",
+				}),
+			}),
+		);
+	});
+
+	it("persists and uses the configured voice input model", async () => {
+		await expect(
+			saveVoiceInputSettings(manager, {
+				providerId: "audio-provider",
+				modelId: "whisper-large-v3",
+			}),
+		).resolves.toMatchObject({
+			voiceInput: {
+				providerId: "audio-provider",
+				modelId: "whisper-large-v3",
+			},
+		});
+
+		const transcribeSpy = vi
+			.spyOn(LlmsModels, "transcribeAudio")
+			.mockResolvedValue({ text: "configured transcript" });
+		await expect(
+			transcribeConfiguredVoiceInput(manager, {
+				audio: new Uint8Array([4, 5, 6]),
+				mediaType: "audio/webm",
+			}),
+		).resolves.toEqual({ text: "configured transcript" });
+		expect(transcribeSpy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				modelId: "whisper-large-v3",
+				providerConfig: expect.objectContaining({
+					providerId: "audio-provider",
+				}),
+			}),
+		);
+	});
+
+	it("creates a streaming session only for a streaming transcription model", async () => {
+		LlmsModels.registerModel("audio-provider", "realtime-whisper", {
+			id: "realtime-whisper",
+			name: "Realtime Whisper",
+			operation: "transcription",
+			operationModes: ["streaming"],
+			modalities: { input: ["audio"], output: ["text"] },
+		});
+		await saveVoiceInputSettings(manager, {
+			providerId: "audio-provider",
+			modelId: "realtime-whisper",
+		});
+		const createSessionSpy = vi
+			.spyOn(LlmsModels, "createStreamingAudioTranscriptionSession")
+			.mockResolvedValue({
+				token: "short-lived-token",
+				url: "wss://audio.example.invalid/transcription",
+			});
+
+		await expect(
+			createConfiguredStreamingTranscriptionSession(manager),
+		).resolves.toMatchObject({ token: "short-lived-token" });
+		expect(createSessionSpy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				modelId: "realtime-whisper",
+				providerConfig: expect.objectContaining({
+					providerId: "audio-provider",
+				}),
+			}),
+		);
+	});
+
+	it("rejects a voice input selection that is not an audio-to-text model", async () => {
+		await expect(
+			saveVoiceInputSettings(manager, {
+				providerId: "audio-provider",
+				modelId: "missing-model",
+			}),
+		).rejects.toThrow(
+			'Model "missing-model" is not a dedicated audio-to-text transcription model',
+		);
+		expect(manager.getVoiceInputSettings()).toBeUndefined();
+	});
+
+	it("resolves the built-in ElevenLabs endpoint from providers.json", async () => {
+		manager.saveProviderSettings(
+			{
+				provider: "elevenlabs",
+				model: "scribe_v2",
+				apiKey: "eleven-key",
+			},
+			{ setLastUsed: false },
+		);
+		const transcribeSpy = vi
+			.spyOn(LlmsModels, "transcribeAudio")
+			.mockResolvedValue({ text: "ElevenLabs transcript" });
+
+		await expect(
+			transcribeLocalAudio(manager, {
+				providerId: "elevenlabs",
+				modelId: "scribe_v2",
+				audio: new Uint8Array([1, 2, 3]),
+				mediaType: "audio/webm",
+			}),
+		).resolves.toEqual({ text: "ElevenLabs transcript" });
+		expect(transcribeSpy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				modelId: "scribe_v2",
+				providerConfig: expect.objectContaining({
+					providerId: "elevenlabs",
+					apiKey: "eleven-key",
+					baseUrl: "https://api.elevenlabs.io/v1",
+				}),
+			}),
+		);
+	});
+});
+
 // ===========================================================================
 // models.json – built-in provider model overlays
 // ===========================================================================
@@ -954,6 +1165,10 @@ describe("saveLocalProviderSettings", () => {
 	afterEach(() => cleanup());
 
 	it("disabling a provider removes it from settings", () => {
+		manager.setVoiceInputSettings({
+			providerId: "test-provider",
+			modelId: "m1",
+		});
 		const result = saveLocalProviderSettings(manager, {
 			providerId: "test-provider",
 			enabled: false,
@@ -961,6 +1176,7 @@ describe("saveLocalProviderSettings", () => {
 
 		expect(result.enabled).toBe(false);
 		expect(manager.getProviderSettings("test-provider")).toBeUndefined();
+		expect(manager.getVoiceInputSettings()).toBeUndefined();
 	});
 
 	it("updates apiKey", () => {
@@ -1335,6 +1551,68 @@ describe("listLocalProviders", () => {
 		expect(providers.map((p) => p.id)).toContain("cline-pass");
 	});
 
+	it("stamps featured tiers from the bundled fallback without a feed fetch", async () => {
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { providers } = await listLocalProviders(manager);
+		const modelList =
+			providers.find((provider) => provider.id === "cline")?.modelList ?? [];
+		const stampedIds = modelList
+			.filter((model) => model.featured?.tier === "recommended")
+			.map((model) => model.id);
+		const expectedIds = FALLBACK_CLINE_RECOMMENDED_MODELS.recommended
+			.map((model) => model.id)
+			.filter((id) => modelList.some((model) => model.id === id));
+
+		// A cold boot must still paint tiered sections: the catalog stamps
+		// synchronously from the bundled fallback instead of waiting on (or
+		// triggering) a feed fetch.
+		expect(stampedIds.length).toBeGreaterThan(0);
+		expect(new Set(stampedIds)).toEqual(new Set(expectedIds));
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("stamps featured tiers from the cached live feed once warmed", async () => {
+		const clineModelIds = Object.keys(
+			await LlmsModels.getModelsForProvider("cline"),
+		);
+		const [recommendedId, freeId] = clineModelIds;
+		await getCachedClineRecommendedModels({
+			baseUrl: "https://api.example.test",
+			fetchImpl: async () =>
+				new Response(
+					JSON.stringify({
+						recommended: [
+							{
+								id: recommendedId,
+								name: "Live Pick",
+								description: "Live description",
+								tags: ["NEW"],
+							},
+						],
+						free: [{ id: freeId, name: "Live Free", description: "" }],
+						clinePass: [],
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				),
+			catalogLoader: async () => ({}),
+		});
+
+		const { providers } = await listLocalProviders(manager);
+		const modelList =
+			providers.find((provider) => provider.id === "cline")?.modelList ?? [];
+
+		expect(
+			modelList.find((model) => model.id === recommendedId)?.featured,
+		).toEqual({ tier: "recommended", rank: 0, tags: ["NEW"] });
+		expect(modelList.find((model) => model.id === freeId)?.featured).toEqual({
+			tier: "free",
+			rank: 0,
+			tags: [],
+		});
+	});
+
 	it("marks enabled providers correctly", async () => {
 		await addLocalProvider(manager, {
 			providerId: "enabled-check-provider",
@@ -1346,6 +1624,32 @@ describe("listLocalProviders", () => {
 		const { providers } = await listLocalProviders(manager);
 		const p = providers.find((x) => x.id === "enabled-check-provider");
 		expect(p?.enabled).toBe(true);
+	});
+
+	it("returns the configured voice input selection", async () => {
+		await addLocalProvider(manager, {
+			providerId: "voice-list-provider",
+			name: "Voice List Provider",
+			baseUrl: "https://example.invalid/v1",
+			models: ["whisper"],
+		});
+		LlmsModels.registerModel("voice-list-provider", "whisper", {
+			id: "whisper",
+			name: "Whisper",
+			operation: "transcription",
+			operationModes: ["batch"],
+			modalities: { input: ["audio"], output: ["text"] },
+		});
+		await saveVoiceInputSettings(manager, {
+			providerId: "voice-list-provider",
+			modelId: "whisper",
+		});
+
+		const catalog = await listLocalProviders(manager);
+		expect(catalog.voiceInput).toEqual({
+			providerId: "voice-list-provider",
+			modelId: "whisper",
+		});
 	});
 
 	it("marks alias providers enabled without copying shared OAuth credentials", async () => {

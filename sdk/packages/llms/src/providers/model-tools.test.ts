@@ -2,6 +2,7 @@ import type { GatewayProviderManifest } from "@cline/shared";
 import { describe, expect, it } from "vitest";
 import {
 	providerManifestSupportsModelTool,
+	providerOffersModelTool,
 	supportsModelTool,
 } from "./model-tools";
 
@@ -31,6 +32,27 @@ describe("supportsModelTool", () => {
 		);
 	});
 
+	it("offers OpenAI image generation to language models, not dedicated image operations", () => {
+		expect(
+			supportsModelTool(
+				{ providerId: "openai-native", modelId: "gpt-5.4" },
+				"image_generation",
+			),
+		).toBe(true);
+		expect(
+			supportsModelTool(
+				{ providerId: "openai-native", modelId: "gpt-image-2" },
+				"image_generation",
+			),
+		).toBe(false);
+		expect(
+			supportsModelTool(
+				{ providerId: "openai", modelId: "gpt-5.4" },
+				"image_generation",
+			),
+		).toBe(false);
+	});
+
 	it("excludes known and unregistered Claude routes from Vertex", () => {
 		expect(
 			supportsModelTool(
@@ -58,6 +80,14 @@ describe("supportsModelTool", () => {
 		expect(
 			providerManifestSupportsModelTool(manifest, "alpha", "web_search"),
 		).toBe(true);
+	});
+
+	it("reports provider-level availability independent of model routes", () => {
+		// Vertex excludes Claude routes per model but still offers web search.
+		expect(providerOffersModelTool("vertex", "web_search")).toBe(true);
+		expect(providerOffersModelTool("anthropic", "web_search")).toBe(true);
+		expect(providerOffersModelTool("openrouter", "web_search")).toBe(false);
+		expect(providerOffersModelTool("unknown-custom", "web_search")).toBe(false);
 	});
 
 	it("falls back to the manifest default model when no model id is given", () => {

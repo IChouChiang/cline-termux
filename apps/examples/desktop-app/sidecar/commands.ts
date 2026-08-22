@@ -8,6 +8,7 @@ import type {
 	CoreSettingsSnapshot,
 	ProviderCapability,
 	ProviderClient,
+	ProviderConfig,
 	ProviderProtocol,
 	SaveProviderSettingsActionRequest,
 } from "@cline/core";
@@ -15,9 +16,11 @@ import {
 	addLocalProvider,
 	ClineAccountService,
 	captureAuthRefreshSoftFailure,
+	createConfiguredStreamingTranscriptionSession,
 	createUserInstructionConfigService,
 	ensureCustomProvidersLoaded,
 	executeClineAccountAction,
+	fetchClineRecommendedModels,
 	getCoreBuiltinToolCatalog,
 	getLocalProviderModels,
 	listHookConfigFiles,
@@ -34,16 +37,20 @@ import {
 	resolveAgentConfigSearchPaths as resolveSharedAgentConfigSearchPaths,
 	SqliteSessionStore,
 	saveLocalProviderSettings,
+	saveVoiceInputSettings,
 	setAutoUpdateEnabledGlobally,
 	setMcpServerDisabled,
 	setModelToolEnabledGlobally,
 	setTelemetryOptOutGlobally,
+	transcribeConfiguredVoiceInput,
 	updateLocalProvider,
 	updateMcpSettingsFileSync,
 } from "@cline/core";
+import { resolveAudioTranscriptionRoute } from "@cline/llms";
 import {
 	CLINE_DEFAULT_MODEL_ID,
 	getClineEnvironmentConfig,
+	isCanonicalBase64,
 	ONE_TIME_SCHEDULE_CRON_PATTERN,
 	ONE_TIME_SCHEDULE_RUN_AT_METADATA_KEY,
 	readHubScheduleMode,
@@ -51,6 +58,7 @@ import {
 import { readFileSyncStrippingUtf8Bom } from "@cline/shared/node";
 import packageJson from "../package.json";
 import { CLINE_ACCOUNT_NOT_AUTHENTICATED_RESULT } from "../webview/lib/cline-account-state";
+import { MAX_RECORDED_AUDIO_BYTES } from "../webview/lib/voice-input-limits";
 import {
 	connectorChannelsPayload,
 	startConnectorChannel,
@@ -60,6 +68,7 @@ import {
 	broadcastEvent,
 	ensureSharedHubClient,
 	resolveSidecarAskQuestion,
+	sendEventToClient,
 } from "./context";
 import {
 	installMarketplaceEntryForDesktopCommand,
@@ -100,6 +109,7 @@ import type {
 	ChatSessionCommandRequest,
 	JsonRecord,
 	SidecarContext,
+	SidecarWebSocketClient,
 } from "./types";
 import { pickWorkspaceDirectory } from "./workspace-picker";
 
@@ -108,6 +118,66 @@ import { pickWorkspaceDirectory } from "./workspace-picker";
 // a synchronous exec (git, folder picker, editor discovery) freezes the whole
 // app until the child exits.
 const execFileAsync = promisify(execFile);
+type DesktopDebugLogLevel = "debug" | "info" | "error";
+
+function sanitizeDiagnosticUrl(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	try {
+		const url = new URL(value);
+		url.username = "";
+		url.password = "";
+		url.search = "";
+		url.hash = "";
+		return url.toString();
+	} catch {
+		return "[invalid URL]";
+	}
+}
+
+function sanitizeDiagnosticFailure(
+	error: unknown,
+	providerConfig: ProviderConfig | undefined,
+): string {
+	let message = error instanceof Error ? error.message : String(error);
+	const sanitizedBaseUrl = sanitizeDiagnosticUrl(providerConfig?.baseUrl);
+	if (providerConfig?.baseUrl && sanitizedBaseUrl) {
+		message = message.replaceAll(providerConfig.baseUrl, sanitizedBaseUrl);
+	}
+	const secrets = [
+		providerConfig?.apiKey,
+		providerConfig?.accessToken,
+		...Object.values(providerConfig?.headers ?? {}),
+	];
+	for (const secret of secrets) {
+		const value = secret?.trim();
+		if (value) {
+			message = message.replaceAll(value, "[redacted]");
+		}
+	}
+	return message;
+}
+
+function emitDesktopDebugLog(
+	ctx: SidecarContext,
+	level: DesktopDebugLogLevel,
+	message: string,
+	metadata?: Record<string, unknown>,
+): void {
+	if (level === "error") {
+		ctx.logger?.error?.(message, metadata);
+	} else if (level === "info") {
+		ctx.logger?.log(message, metadata);
+	} else {
+		ctx.logger?.debug(message, metadata);
+	}
+	broadcastEvent(ctx, "desktop_debug_log", {
+		scope: "voice-input",
+		level,
+		message,
+		timestamp: new Date().toISOString(),
+		metadata,
+	});
+}
 
 // Strict allowlist: the opener hands the URL to the OS protocol handler, so
 // anything broader (file:, custom app schemes) would let webview content
@@ -675,6 +745,43 @@ async function handleRoutineScheduleCommand(
 }
 
 // ---------------------------------------------------------------------------
+// Agenda task queue helpers (in-process via shared hub server)
+// ---------------------------------------------------------------------------
+
+const AGENDA_TASK_COMMANDS = new Set([
+	"task.create",
+	"task.list",
+	"task.get",
+	"task.update",
+	"task.approve",
+	"task.cancel",
+	"task.run",
+	"task.automation.get",
+	"task.automation.set",
+]);
+
+const AGENDA_TASK_EXECUTION_COMMANDS = new Set([
+	"task.create",
+	"task.approve",
+	"task.cancel",
+	"task.run",
+	"task.automation.set",
+]);
+
+async function handleAgendaTaskCommand(
+	ctx: SidecarContext,
+	command: string,
+	args?: Record<string, unknown>,
+): Promise<unknown> {
+	const hubClient = await ensureSharedHubClient(ctx);
+	const reply = await hubClient.command(command as never, args);
+	if (!reply.ok) {
+		throw new Error(reply.error?.message ?? `hub command failed: ${command}`);
+	}
+	return reply.payload ?? {};
+}
+
+// ---------------------------------------------------------------------------
 // User instruction config listing through the core config service.
 // ---------------------------------------------------------------------------
 
@@ -1082,7 +1189,7 @@ export async function handleCommand(
 	ctx: SidecarContext,
 	command: string,
 	args?: Record<string, unknown>,
-	options?: { connection?: object },
+	options?: { connection?: SidecarWebSocketClient },
 ): Promise<unknown> {
 	// ── Chat session commands ──────────────────────────────────────────
 	if (command === "chat_session_command") {
@@ -1092,6 +1199,33 @@ export async function handleCommand(
 			(args?.request as ChatSessionCommandRequest | undefined) ??
 				(args as ChatSessionCommandRequest),
 		);
+	}
+	if (command === "proceed_while_running") {
+		const sessionId = String(args?.sessionId ?? "").trim();
+		if (!sessionId) {
+			throw new Error("sessionId is required");
+		}
+		const toolCallId = asTrimmedString(args?.toolCallId);
+		const hubClient = await ensureSharedHubClient(
+			ctx,
+			ctx.sessionManager?.runtimeAddress,
+		);
+		const reply = await hubClient.command(
+			"run.proceed_while_running",
+			{ sessionId, ...(toolCallId ? { toolCallId } : {}) },
+			sessionId,
+		);
+		if (!reply.ok) {
+			throw new Error(
+				reply.error?.message ?? "Could not proceed while command is running.",
+			);
+		}
+		return {
+			detachedCount:
+				typeof reply.payload?.detachedCount === "number"
+					? reply.payload.detachedCount
+					: 0,
+		};
 	}
 
 	// ── Session data reading ──────────────────────────────────────────
@@ -1145,8 +1279,12 @@ export async function handleCommand(
 	// ── Tool approvals (in-memory) ────────────────────────────────────
 	if (command === "poll_tool_approvals") {
 		const sessionId = String(args?.sessionId ?? "").trim();
+		const connection = options?.connection;
+		if (!connection?.data?.canApproveTools) {
+			throw new Error("tool approvals require a trusted desktop connection");
+		}
 		return Array.from(ctx.pendingApprovals.values())
-			.filter((a) => a.item.sessionId === sessionId)
+			.filter((a) => a.owner === connection && a.item.sessionId === sessionId)
 			.map((a) => a.item);
 	}
 	if (command === "respond_tool_approval") {
@@ -1155,24 +1293,38 @@ export async function handleCommand(
 		if (!sessionId || !requestId) {
 			throw new Error("sessionId and requestId are required");
 		}
-		const pending = ctx.pendingApprovals.get(requestId);
-		if (pending) {
-			pending.resolve({
-				approved: Boolean(args?.approved),
-				...(typeof args?.reason === "string" && args.reason.trim().length > 0
-					? { reason: args.reason.trim() }
-					: {}),
-			});
+		const connection = options?.connection;
+		if (!connection?.data?.canApproveTools) {
+			throw new Error("tool approvals require a trusted desktop connection");
 		}
+		const pending = ctx.pendingApprovals.get(requestId);
+		if (!pending || pending.owner !== connection) {
+			throw new Error("tool approval does not belong to this connection");
+		}
+		if (pending.item.sessionId !== sessionId) {
+			throw new Error("tool approval does not belong to this session");
+		}
+		pending.resolve({
+			approved: Boolean(args?.approved),
+			...(typeof args?.reason === "string" && args.reason.trim().length > 0
+				? { reason: args.reason.trim() }
+				: {}),
+		});
 		ctx.pendingApprovals.delete(requestId);
 		const remaining = Array.from(ctx.pendingApprovals.values())
-			.filter((a) => a.item.sessionId === sessionId)
+			.filter((a) => a.owner === connection && a.item.sessionId === sessionId)
 			.map((a) => a.item);
-		broadcastEvent(ctx, "tool_approval_state", {
+		sendEventToClient(ctx, connection, "tool_approval_state", {
 			sessionId,
 			items: remaining,
 		});
 		return true;
+	}
+	if (command === "poll_ask_questions") {
+		const sessionId = String(args?.sessionId ?? "").trim();
+		return Array.from(ctx.pendingQuestions.values())
+			.filter((question) => question.item.sessionId === sessionId)
+			.map((question) => question.item);
 	}
 	if (command === "respond_ask_question") {
 		const requestId = String(args?.requestId ?? "").trim();
@@ -1422,6 +1574,147 @@ export async function handleCommand(
 			String(args?.provider ?? ""),
 			manager.getProviderConfig(String(args?.provider ?? "").trim()),
 		);
+	}
+	if (command === "list_cline_recommended_models") {
+		// Tiered picker data (recommended / free / clinePass) with
+		// display-ready names; falls back to a bundled list offline.
+		return await fetchClineRecommendedModels();
+	}
+	if (command === "create_streaming_transcription_session") {
+		const manager = new ProviderSettingsManager();
+		const selection = manager.getVoiceInputSettings();
+		const providerConfig = selection
+			? manager.getProviderConfig(selection.providerId, {
+					includeKnownModels: false,
+				})
+			: undefined;
+		const route = providerConfig
+			? resolveAudioTranscriptionRoute(providerConfig)
+			: undefined;
+		const diagnostics = {
+			providerId: selection?.providerId,
+			modelId: selection?.modelId,
+			transport: route?.transport,
+			endpoint: sanitizeDiagnosticUrl(route?.endpoint),
+		};
+		emitDesktopDebugLog(
+			ctx,
+			"debug",
+			"Creating streaming transcription session",
+			diagnostics,
+		);
+		const startedAt = Date.now();
+		try {
+			const session = await createConfiguredStreamingTranscriptionSession(
+				manager,
+				{ expiresAfterSeconds: 300 },
+			);
+			emitDesktopDebugLog(
+				ctx,
+				"debug",
+				"Streaming transcription session created",
+				{
+					...diagnostics,
+					durationMs: Date.now() - startedAt,
+					expiresAt: session.expiresAt,
+				},
+			);
+			return session;
+		} catch (error) {
+			const failure = sanitizeDiagnosticFailure(error, providerConfig);
+			emitDesktopDebugLog(
+				ctx,
+				"error",
+				"Streaming transcription session setup failed",
+				{
+					...diagnostics,
+					durationMs: Date.now() - startedAt,
+					failure,
+				},
+			);
+			throw new Error(failure, { cause: error });
+		}
+	}
+	if (command === "transcribe_audio") {
+		const audioBase64 = String(args?.audioBase64 ?? "");
+		const mediaType = String(args?.mediaType ?? "").trim() || undefined;
+		if (!isCanonicalBase64(audioBase64)) {
+			throw new Error("recorded audio must be canonical base64");
+		}
+		const decodedBytes =
+			Math.floor((audioBase64.length * 3) / 4) -
+			(audioBase64.endsWith("==") ? 2 : audioBase64.endsWith("=") ? 1 : 0);
+		if (decodedBytes > MAX_RECORDED_AUDIO_BYTES) {
+			throw new Error(
+				`recorded audio exceeds the ${MAX_RECORDED_AUDIO_BYTES} byte limit`,
+			);
+		}
+		const manager = new ProviderSettingsManager();
+		const selection = manager.getVoiceInputSettings();
+		const providerConfig = selection
+			? manager.getProviderConfig(selection.providerId, {
+					includeKnownModels: false,
+				})
+			: undefined;
+		const route = providerConfig
+			? resolveAudioTranscriptionRoute(providerConfig)
+			: undefined;
+		const diagnostics = {
+			providerId: selection?.providerId,
+			modelId: selection?.modelId,
+			transport: route?.transport,
+			endpoint: sanitizeDiagnosticUrl(route?.endpoint),
+			mediaType,
+			audioBytes: decodedBytes,
+		};
+		emitDesktopDebugLog(
+			ctx,
+			"debug",
+			"Starting audio transcription",
+			diagnostics,
+		);
+		const startedAt = Date.now();
+		try {
+			const result = await transcribeConfiguredVoiceInput(manager, {
+				audio: Buffer.from(audioBase64, "base64"),
+				mediaType,
+			});
+			emitDesktopDebugLog(ctx, "debug", "Audio transcription completed", {
+				...diagnostics,
+				durationMs: Date.now() - startedAt,
+				transcriptCharacters: result.text.length,
+				language: result.language,
+			});
+			return result;
+		} catch (error) {
+			const failure = sanitizeDiagnosticFailure(error, providerConfig);
+			emitDesktopDebugLog(ctx, "error", "Audio transcription failed", {
+				...diagnostics,
+				durationMs: Date.now() - startedAt,
+				failure,
+			});
+			throw new Error(failure, { cause: error });
+		}
+	}
+	if (command === "save_voice_input_settings") {
+		const providerId = String(args?.provider ?? "").trim();
+		const modelId = String(args?.model ?? "").trim();
+		if (Boolean(providerId) !== Boolean(modelId)) {
+			throw new Error(
+				"voice input provider and model must both be set or both be cleared",
+			);
+		}
+		const manager = new ProviderSettingsManager();
+		const result = await saveVoiceInputSettings(
+			manager,
+			providerId && modelId ? { providerId, modelId } : undefined,
+		);
+		emitDesktopDebugLog(ctx, "info", "Voice input settings saved", {
+			providerId: result.voiceInput?.providerId,
+			modelId: result.voiceInput?.modelId,
+			configured: Boolean(result.voiceInput),
+		});
+		return result;
 	}
 	if (command === "save_provider_settings") {
 		const manager = new ProviderSettingsManager();
@@ -1787,6 +2080,17 @@ export async function handleCommand(
 		command === "delete_routine_schedule"
 	) {
 		return await handleRoutineScheduleCommand(ctx, command, args);
+	}
+
+	// ── Agenda task queue ─────────────────────────────────────────────
+	if (AGENDA_TASK_COMMANDS.has(command)) {
+		if (
+			AGENDA_TASK_EXECUTION_COMMANDS.has(command) &&
+			!options?.connection?.data?.canApproveTools
+		) {
+			throw new Error("task execution requires a trusted desktop connection");
+		}
+		return await handleAgendaTaskCommand(ctx, command, args);
 	}
 
 	// ── User instruction configs ──────────────────────────────────────
