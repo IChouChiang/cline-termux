@@ -66,6 +66,39 @@ curl_request() {
 		"$@"
 }
 
+# GitHub's unauthenticated REST quota is 60 requests/hour per source IP. Behind
+# a shared proxy exit node or carrier NAT that budget is spent by strangers, so
+# an install can fail with HTTP 403 before it touches the device. A token lifts
+# the ceiling to 5000/hour; the asset downloads below skip the API entirely.
+github_token() {
+	printf '%s' "${CLINE_TERMUX_GITHUB_TOKEN:-${GITHUB_TOKEN:-${GH_TOKEN:-}}}"
+}
+
+curl_api() {
+	local token
+	token="$(github_token)"
+	if [ -n "$token" ]; then
+		curl_request --header "Authorization: Bearer $token" "$@"
+	else
+		curl_request "$@"
+	fi
+}
+
+# github.com redirects /releases/latest to /releases/tag/<tag> and is not part
+# of the REST rate limit, so the common "install the newest release" path can
+# resolve its tag without spending any API quota.
+resolve_latest_tag() {
+	local location
+	location=$(curl --fail --silent --show-error \
+		--connect-timeout 15 --max-time 60 \
+		--output /dev/null --write-out '%{redirect_url}' \
+		"https://github.com/$GITHUB_REPO/releases/latest") || return 1
+	case "$location" in
+		*/releases/tag/*) printf '%s\n' "${location##*/releases/tag/}" ;;
+		*) return 1 ;;
+	esac
+}
+
 usage() {
 	cat <<EOF
 Usage: bash install-cline-termux.sh [options]
@@ -81,6 +114,8 @@ Options:
   -h, --help          Show this help
 
 Environment overrides use the CLINE_TERMUX_* names shown in the script.
+Set GITHUB_TOKEN (or CLINE_TERMUX_GITHUB_TOKEN) to authenticate GitHub API
+requests if you share a public IP and hit "API rate limit exceeded".
 EOF
 }
 
@@ -203,27 +238,34 @@ find_local_bun_asset() {
 
 download_bun_ffi() {
 	local tag="v$BUN_FFI_VERSION"
-	local api_url="https://api.github.com/repos/$BUN_FFI_REPO/releases/tags/$tag"
+	# The tag and asset name are both pinned above, so the CDN URL is known
+	# without asking the API; metadata is only consulted if that URL is wrong.
+	local download_url="https://github.com/$BUN_FFI_REPO/releases/download/$tag/$BUN_FFI_ASSET"
 
-	info "Fetching Bun FFI release metadata from GitHub..."
-	local release_json
-	release_json=$(curl_request "$api_url") \
-		|| die "Failed to fetch Bun FFI release metadata for $tag."
+	mkdir -p "$DOWNLOAD_DIR"
+	info "Downloading $BUN_FFI_ASSET ..."
+	if ! curl_request -o "$DOWNLOAD_DIR/$BUN_FFI_ASSET" "$download_url" 2>/dev/null; then
+		warn "Could not download $BUN_FFI_ASSET directly; falling back to release metadata."
+		local api_url="https://api.github.com/repos/$BUN_FFI_REPO/releases/tags/$tag"
 
-	local download_url
-	download_url=$(printf '%s' "$release_json" | BUN_FFI_ASSET="$BUN_FFI_ASSET" node -e '
+		info "Fetching Bun FFI release metadata from GitHub..."
+		local release_json
+		release_json=$(curl_api "$api_url") \
+			|| die "Failed to fetch Bun FFI release metadata for $tag."
+
+		download_url=$(printf '%s' "$release_json" | BUN_FFI_ASSET="$BUN_FFI_ASSET" node -e '
 const fs = require("fs")
 const data = JSON.parse(fs.readFileSync(0, "utf8"))
 const asset = (data.assets || []).find((entry) => entry.name === process.env.BUN_FFI_ASSET)
 if (!asset) process.exit(1)
 console.log(asset.browser_download_url || "")
 ') || die "Could not find Bun FFI asset $BUN_FFI_ASSET in $BUN_FFI_REPO@$tag."
-	[ -n "$download_url" ] || die "Bun FFI asset download URL was missing."
+		[ -n "$download_url" ] || die "Bun FFI asset download URL was missing."
 
-	mkdir -p "$DOWNLOAD_DIR"
-	info "Downloading $BUN_FFI_ASSET ..."
-	curl_request -o "$DOWNLOAD_DIR/$BUN_FFI_ASSET" "$download_url" \
-		|| die "Failed to download Bun FFI runtime."
+		info "Downloading $BUN_FFI_ASSET ..."
+		curl_request -o "$DOWNLOAD_DIR/$BUN_FFI_ASSET" "$download_url" \
+			|| die "Failed to download Bun FFI runtime."
+	fi
 
 	if curl_request -o "$DOWNLOAD_DIR/$BUN_FFI_ASSET.sha256" "$download_url.sha256" 2>/dev/null; then
 		verify_checksum_if_present "$DOWNLOAD_DIR/$BUN_FFI_ASSET"
@@ -283,21 +325,44 @@ install_bun_ffi() {
 }
 
 download_release() {
-	local api_url
+	local tag_name="" asset_name="" download_url=""
 
 	if [ -n "$REQUESTED_VERSION" ]; then
 		REQUESTED_VERSION="$(normalize_tag "$REQUESTED_VERSION")"
-		api_url="https://api.github.com/repos/$GITHUB_REPO/releases/tags/$REQUESTED_VERSION"
+		tag_name="$REQUESTED_VERSION"
 	else
-		api_url="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
+		info "Resolving the latest release..."
+		tag_name="$(resolve_latest_tag || true)"
 	fi
 
-	info "Fetching release metadata from GitHub..."
-	local release_json
-	release_json=$(curl_request "$api_url") || die "Failed to fetch release metadata."
+	DOWNLOAD_DIR=$(mktemp -d)
 
-	local release_info
-	release_info=$(printf '%s' "$release_json" | node -e '
+	# Release assets are named after their tag, so once the tag is known the
+	# bundle can be fetched straight from the CDN without any API request.
+	if [ -n "$tag_name" ]; then
+		asset_name="cline-termux-aarch64-$tag_name.tar.gz"
+		download_url="https://github.com/$GITHUB_REPO/releases/download/$tag_name/$asset_name"
+		info "Downloading $asset_name ..."
+		if ! curl_request -o "$DOWNLOAD_DIR/$asset_name" "$download_url" 2>/dev/null; then
+			warn "Could not download $asset_name directly; falling back to release metadata."
+			tag_name=""
+		fi
+	fi
+
+	if [ -z "$tag_name" ]; then
+		local api_url
+		if [ -n "$REQUESTED_VERSION" ]; then
+			api_url="https://api.github.com/repos/$GITHUB_REPO/releases/tags/$REQUESTED_VERSION"
+		else
+			api_url="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
+		fi
+
+		info "Fetching release metadata from GitHub..."
+		local release_json
+		release_json=$(curl_api "$api_url") || die "Failed to fetch release metadata."
+
+		local release_info
+		release_info=$(printf '%s' "$release_json" | node -e '
 const fs = require("fs")
 const data = JSON.parse(fs.readFileSync(0, "utf8"))
 const asset = (data.assets || []).find((entry) => /^cline-termux-aarch64-v.+\.tar\.gz$/.test(entry.name))
@@ -305,18 +370,17 @@ if (!asset) process.exit(1)
 console.log([data.tag_name || "", asset.name, asset.browser_download_url || ""].join("\n"))
 ') || die "Could not find a cline-termux aarch64 tarball in the release."
 
-	local tag_name asset_name download_url
-	tag_name=$(printf '%s\n' "$release_info" | sed -n '1p')
-	asset_name=$(printf '%s\n' "$release_info" | sed -n '2p')
-	download_url=$(printf '%s\n' "$release_info" | sed -n '3p')
+		tag_name=$(printf '%s\n' "$release_info" | sed -n '1p')
+		asset_name=$(printf '%s\n' "$release_info" | sed -n '2p')
+		download_url=$(printf '%s\n' "$release_info" | sed -n '3p')
 
-	[ -n "$tag_name" ] || die "Release tag was missing from GitHub metadata."
-	[ -n "$download_url" ] || die "Release asset download URL was missing."
+		[ -n "$tag_name" ] || die "Release tag was missing from GitHub metadata."
+		[ -n "$download_url" ] || die "Release asset download URL was missing."
 
-	DOWNLOAD_DIR=$(mktemp -d)
-	info "Downloading $asset_name ..."
-	curl_request -o "$DOWNLOAD_DIR/$asset_name" "$download_url" \
-		|| die "Failed to download release tarball."
+		info "Downloading $asset_name ..."
+		curl_request -o "$DOWNLOAD_DIR/$asset_name" "$download_url" \
+			|| die "Failed to download release tarball."
+	fi
 
 	local checksum_url="$download_url.sha256"
 	if curl_request -o "$DOWNLOAD_DIR/$asset_name.sha256" "$checksum_url" 2>/dev/null; then
