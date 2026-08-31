@@ -3,12 +3,12 @@
   "upstream": {
     "repository": "cline/cline",
     "remote": "upstream",
-    "tag": "cli-v3.0.58",
-    "commit": "8e7a55498bdb265004427160b68d8228a62d4e4a",
-    "cliVersion": "3.0.58"
+    "tag": "cli-v3.0.59",
+    "commit": "6ba9b9d7b47fce13d042fbb8273ef4072c23f77e",
+    "cliVersion": "3.0.59"
   },
   "termux": {
-    "releaseTag": "v3.0.58-termux.1",
+    "releaseTag": "v3.0.59-termux.1",
     "revision": 1,
     "platform": "android",
     "architecture": "aarch64",
