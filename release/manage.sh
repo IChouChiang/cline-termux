@@ -199,8 +199,17 @@ install_latest_with_acceptance() {
 	local remote_test="~/tmp/test-installed-latest.sh"
 
 	install_release_on_host "$host" "$latest_url"
-	scp -q "$SCRIPT_DIR/test-installed-termux.sh" "$host:$remote_test"
+	copy_remote_acceptance "$host" "$remote_test"
 	run_remote_acceptance "$host" "$remote_test" "$release_tag" "$cli_version"
+}
+
+# A freshly set up device (the Tab S7+ after a clean Termux install) has no
+# ~/tmp, and scp does not create parent directories.
+copy_remote_acceptance() {
+	local host="$1"
+	local remote_test="$2"
+	ssh "$host" "mkdir -p $(dirname "$remote_test")"
+	scp -q "$SCRIPT_DIR/test-installed-termux.sh" "$host:$remote_test"
 }
 
 # Run an already-copied acceptance script on the device and remove it again
@@ -240,7 +249,7 @@ run_candidate_acceptance() {
 	local cli_version="$3"
 	local remote_test="~/tmp/test-installed-$release_tag.sh"
 
-	scp -q "$SCRIPT_DIR/test-installed-termux.sh" "$host:$remote_test"
+	copy_remote_acceptance "$host" "$remote_test"
 	run_remote_acceptance "$host" "$remote_test" "$release_tag" "$cli_version"
 }
 
