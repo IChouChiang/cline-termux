@@ -204,13 +204,15 @@ install_latest_with_acceptance() {
 }
 
 # Run an already-copied acceptance script on the device and remove it again
-# whatever the outcome; the source lives in this repository.
+# whatever the outcome; the source lives in this repository. The remote
+# login shell on the test devices is zsh, where `status` is read-only, so
+# the exit code is carried in a plain variable name both shells accept.
 run_remote_acceptance() {
 	local host="$1"
 	local remote_test="$2"
 	local release_tag="$3"
 	local cli_version="$4"
-	ssh "$host" "bash $remote_test '$release_tag' '$cli_version'; status=\$?; rm -f $remote_test; exit \$status"
+	ssh "$host" "bash $remote_test '$release_tag' '$cli_version'; rc=\$?; rm -f $remote_test; exit \$rc"
 }
 
 retry_latest_acceptance() {
