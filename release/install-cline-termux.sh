@@ -15,6 +15,12 @@ REQUESTED_VERSION="${CLINE_TERMUX_VERSION:-}"
 FORCE="${CLINE_TERMUX_FORCE:-0}"
 SKIP_PKG_UPDATE="${CLINE_TERMUX_SKIP_PKG_UPDATE:-0}"
 SKIP_BUN_INSTALL="${CLINE_TERMUX_SKIP_BUN_INSTALL:-0}"
+# Every release lands in its own $INSTALL_BASE/<release> tree (~120 MB). After
+# a successful install the installer keeps the newest KEEP_VERSIONS trees
+# (the one just installed plus the previous release as an offline rollback
+# path) and removes older ones. Nothing outside $INSTALL_BASE is touched.
+PRUNE="${CLINE_TERMUX_PRUNE:-1}"
+KEEP_VERSIONS="${CLINE_TERMUX_KEEP_VERSIONS:-2}"
 DOWNLOAD_DIR=""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CURL_RETRIES="${CLINE_TERMUX_CURL_RETRIES:-5}"
@@ -111,6 +117,10 @@ Options:
   --force             Back up and replace an existing non-Cline-Termux launcher
   --skip-pkg-update   Do not run pkg update before installing prerequisites
   --skip-bun-install  Require an existing Bun FFI runtime instead of installing it
+  --keep N            Keep the N newest installed versions after a successful
+                      install (default $KEEP_VERSIONS: the new one plus the previous
+                      release as an offline rollback); older trees are removed
+  --no-prune          Never remove previously installed versions
   -h, --help          Show this help
 
 Environment overrides use the CLINE_TERMUX_* names shown in the script.
@@ -153,6 +163,15 @@ while [ "$#" -gt 0 ]; do
 			SKIP_BUN_INSTALL=1
 			shift
 			;;
+		--keep)
+			[ -n "${2:-}" ] || die "--keep requires a value"
+			KEEP_VERSIONS="$2"
+			shift 2
+			;;
+		--no-prune)
+			PRUNE=0
+			shift
+			;;
 		-h|--help)
 			usage
 			exit 0
@@ -162,6 +181,10 @@ while [ "$#" -gt 0 ]; do
 			;;
 	esac
 done
+
+case "$KEEP_VERSIONS" in
+	''|*[!0-9]*|0) die "--keep must be a positive integer (got '$KEEP_VERSIONS')" ;;
+esac
 
 normalize_tag() {
 	case "$1" in
@@ -534,6 +557,70 @@ smoke_test() {
 	fi
 }
 
+# Remove installed release trees older than the KEEP_VERSIONS newest ones.
+# Runs only after the new install passed its smoke test, so the previous
+# tree stays available as a rollback until the new one is known to work.
+# The tree behind the `current` symlink is never removed, whatever its
+# version, and only directories named like a release (3.0.60-termux.1)
+# directly under INSTALL_BASE are considered. Any failure here is a warning:
+# the install itself has already succeeded.
+prune_old_versions() {
+	if [ "$PRUNE" != 1 ]; then
+		info "Keeping all previously installed versions (--no-prune)."
+		return 0
+	fi
+
+	local current_target current_name
+	current_target=$(readlink -f "$INSTALL_BASE/current" 2>/dev/null || true)
+	if [ -z "$current_target" ] || [ ! -d "$current_target" ]; then
+		warn "Skipping cleanup of old versions: $INSTALL_BASE/current does not resolve to a directory."
+		return 0
+	fi
+	current_name=$(basename "$current_target")
+
+	local dir name
+	local -a others=()
+	for dir in "$INSTALL_BASE"/*/; do
+		dir="${dir%/}"
+		[ -d "$dir" ] && [ ! -L "$dir" ] || continue
+		name=$(basename "$dir")
+		[ "$name" != "$current_name" ] || continue
+		case "$name" in
+			*[!0-9A-Za-z.-]*) continue ;;
+		esac
+		printf '%s' "$name" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-termux\.[0-9]+$' || continue
+		others+=("$name")
+	done
+
+	# `current` counts as one of the kept versions; the rest are the newest
+	# of the other release trees by version order.
+	local keep_others=$((KEEP_VERSIONS - 1))
+	local remove_count=$(( ${#others[@]} - keep_others ))
+	if [ "$remove_count" -le 0 ]; then
+		info "No old versions to remove (keeping the $KEEP_VERSIONS newest)."
+		return 0
+	fi
+
+	local removed=0 failed=0
+	while IFS= read -r name; do
+		[ -n "$name" ] || continue
+		if rm -rf "${INSTALL_BASE:?}/${name:?}"; then
+			info "Removed old version $name"
+			removed=$((removed + 1))
+		else
+			warn "Could not remove old version $INSTALL_BASE/$name"
+			failed=$((failed + 1))
+		fi
+	done < <(printf '%s\n' "${others[@]}" | sort -V | head -n "$remove_count")
+
+	if [ "$failed" -eq 0 ]; then
+		ok "Removed $removed old version(s); keeping $KEEP_VERSIONS (use --keep N or --no-prune to change)."
+	else
+		warn "Removed $removed old version(s), $failed could not be removed."
+	fi
+	return 0
+}
+
 info "Checking environment..."
 [ -n "${PREFIX:-}" ] || die "This installer requires Termux (PREFIX not set)."
 [ -d "$PREFIX" ] || die "PREFIX directory not found: $PREFIX"
@@ -560,6 +647,7 @@ fi
 install_bundle "$SOURCE_DIR"
 write_launcher
 smoke_test
+prune_old_versions || warn "Cleanup of old versions failed; the new installation is unaffected."
 
 echo
 ok "Cline Termux installed. Run: cline"

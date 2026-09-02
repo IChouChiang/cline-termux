@@ -72,6 +72,19 @@ $PREFIX/bin/bun-ffi
 The private `bun-ffi` runtime is used only by this Cline port. It does not
 replace `$PREFIX/bin/bun`.
 
+Each release installs into its own `$PREFIX/opt/cline-termux/<version>` tree
+and `current` points at the active one. After a successful install the
+installer keeps the previous version as an offline rollback path and removes
+older trees. To keep more, or to keep everything:
+
+```sh
+curl -fsSL https://github.com/IChouChiang/cline-termux/releases/latest/download/install-cline-termux.sh | bash -s -- --keep 3
+curl -fsSL https://github.com/IChouChiang/cline-termux/releases/latest/download/install-cline-termux.sh | bash -s -- --no-prune
+```
+
+The same settings are available as `CLINE_TERMUX_KEEP_VERSIONS` and
+`CLINE_TERMUX_PRUNE=0`. Nothing outside `$PREFIX/opt/cline-termux` is removed.
+
 ## Why Bun FFI Is Included
 
 Cline CLI v3 uses OpenTUI. OpenTUI loads its native renderer through

@@ -200,7 +200,17 @@ install_latest_with_acceptance() {
 
 	install_release_on_host "$host" "$latest_url"
 	scp -q "$SCRIPT_DIR/test-installed-termux.sh" "$host:$remote_test"
-	ssh "$host" "bash $remote_test '$release_tag' '$cli_version'"
+	run_remote_acceptance "$host" "$remote_test" "$release_tag" "$cli_version"
+}
+
+# Run an already-copied acceptance script on the device and remove it again
+# whatever the outcome; the source lives in this repository.
+run_remote_acceptance() {
+	local host="$1"
+	local remote_test="$2"
+	local release_tag="$3"
+	local cli_version="$4"
+	ssh "$host" "bash $remote_test '$release_tag' '$cli_version'; status=\$?; rm -f $remote_test; exit \$status"
 }
 
 retry_latest_acceptance() {
@@ -229,7 +239,7 @@ run_candidate_acceptance() {
 	local remote_test="~/tmp/test-installed-$release_tag.sh"
 
 	scp -q "$SCRIPT_DIR/test-installed-termux.sh" "$host:$remote_test"
-	ssh "$host" "bash $remote_test '$release_tag' '$cli_version'"
+	run_remote_acceptance "$host" "$remote_test" "$release_tag" "$cli_version"
 }
 
 retry_candidate_acceptance() {
@@ -668,6 +678,34 @@ resolve_expected_conflicts() {
 	done
 }
 
+# Every candidate run stages its payload under ~/tmp on the test device and
+# earlier versions of this script never removed it, so a device accumulated a
+# ~70 MB directory per candidate plus one acceptance script per run. Remove
+# everything this manager ever left under ~/tmp before staging the next
+# candidate. Best effort: a cleanup problem must not fail the release.
+clean_device_staging() {
+	local host="$1"
+	info "Removing stale candidate staging under ~/tmp on $host..."
+	ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" bash -s <<'REMOTE' \
+		|| warn "could not clean stale staging on $host; continuing"
+set -u
+shopt -s nullglob
+removed=0
+for path in \
+	"$HOME"/tmp/cline-termux-candidate-* \
+	"$HOME"/tmp/cline-termux-install-test.* \
+	"$HOME"/tmp/test-installed-v*.sh \
+	"$HOME"/tmp/test-installed-latest.sh; do
+	if rm -rf "${path:?}"; then
+		removed=$((removed + 1))
+	else
+		echo "could not remove $path" >&2
+	fi
+done
+echo "removed $removed stale staging entries"
+REMOTE
+}
+
 phone_local_bundle_test() {
 	local host="$1"
 	local candidate_dir="$2"
@@ -678,6 +716,7 @@ phone_local_bundle_test() {
 	bun_asset="$SCRIPT_DIR/dist/$(json_get "$MANIFEST" bunFfi.asset)"
 	bun_checksum="$bun_asset.sha256"
 
+	clean_device_staging "$host"
 	info "Testing the unpublished package in an isolated sandbox on $host..."
 	ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" "rm -rf $remote_dir && mkdir -p $remote_dir"
 	scp -q \
@@ -695,6 +734,10 @@ phone_local_bundle_test() {
 	fi
 	ssh "$host" "bash $remote_dir/test-termux-install.sh --from-tarball $remote_dir/$release_name.tar.gz $remote_bun_option"
 	ok "Unpublished package passed the isolated Termux install test"
+	# The payload is kept locally in $candidate_dir; the device copy only
+	# matters while a failed sandbox run is being debugged.
+	ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" "rm -rf $remote_dir" \
+		|| warn "could not remove $remote_dir on $host"
 }
 
 install_published_candidate() {

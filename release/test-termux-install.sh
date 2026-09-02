@@ -96,7 +96,18 @@ BUNDLE_DIR=$(find "$WORK_DIR/extract" -maxdepth 1 -type d -name 'cline-termux-aa
 INSTALL_SCRIPT="$BUNDLE_DIR/install.sh"
 [ -f "$INSTALL_SCRIPT" ] || fail "bundle is missing install.sh"
 
-CLINE_TERMUX_INSTALL_BASE="$WORK_DIR/opt/cline-termux" \
+# Pre-seed fake older installs so the installer's cleanup of old version
+# trees is exercised: it must keep the newest previous release, remove the
+# older ones, and leave directories that are not release trees alone.
+SANDBOX_INSTALL_BASE="$WORK_DIR/opt/cline-termux"
+mkdir -p \
+	"$SANDBOX_INSTALL_BASE/3.0.1-termux.1" \
+	"$SANDBOX_INSTALL_BASE/3.0.2-termux.1" \
+	"$SANDBOX_INSTALL_BASE/3.0.2-termux.2" \
+	"$SANDBOX_INSTALL_BASE/not-a-release"
+echo seed > "$SANDBOX_INSTALL_BASE/3.0.2-termux.2/VERSION"
+
+CLINE_TERMUX_INSTALL_BASE="$SANDBOX_INSTALL_BASE" \
 CLINE_TERMUX_BUN_INSTALL_BASE="$WORK_DIR/opt/bun-android-ffi" \
 CLINE_TERMUX_BUN_LINK_PATH="$WORK_DIR/bin/bun-ffi" \
 CLINE_TERMUX_LAUNCHER_PATH="$WORK_DIR/bin/cline" \
@@ -111,6 +122,18 @@ CLINE_TERMUX_FORCE=1 \
 [ -L "$WORK_DIR/bin/bun-ffi" ] || fail "bun-ffi symlink was not created"
 [ -f "$WORK_DIR/opt/cline-termux/current/node_modules/@opentui/core-android-arm64/libopentui.so" ] \
 	|| fail "OpenTUI Android native library missing from install"
+
+[ ! -e "$SANDBOX_INSTALL_BASE/3.0.1-termux.1" ] \
+	|| fail "installer kept the oldest version tree 3.0.1-termux.1"
+[ ! -e "$SANDBOX_INSTALL_BASE/3.0.2-termux.1" ] \
+	|| fail "installer kept the old version tree 3.0.2-termux.1"
+[ -f "$SANDBOX_INSTALL_BASE/3.0.2-termux.2/VERSION" ] \
+	|| fail "installer removed the previous version tree 3.0.2-termux.2 (rollback path)"
+[ -d "$SANDBOX_INSTALL_BASE/not-a-release" ] \
+	|| fail "installer removed a directory that is not a release tree"
+[ -f "$(readlink -f "$SANDBOX_INSTALL_BASE/current")/index.js" ] \
+	|| fail "current no longer resolves to an installed tree after cleanup"
+ok "Old version cleanup kept current + previous and removed older trees"
 rg -q --glob 'index-*.js' \
 	'process\.platform === "linux" \|\| process\.platform === "android"' \
 	"$WORK_DIR/opt/cline-termux/current/node_modules/@opentui/core" \

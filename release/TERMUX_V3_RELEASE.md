@@ -151,9 +151,13 @@ Stable users install or update with:
 curl -fsSL https://github.com/IChouChiang/cline-termux/releases/latest/download/install-cline-termux.sh | bash
 ```
 
-The installer checks the Cline archive checksum, keeps versioned directories,
-updates the `current` symlink atomically, and runs a native OpenTUI `dlopen()`
-smoke before reporting success.
+The installer checks the Cline archive checksum, installs into a versioned
+directory, updates the `current` symlink atomically, and runs a native OpenTUI
+`dlopen()` smoke before reporting success. After that smoke passes it removes
+version trees older than the newest two (the new install plus the previous
+release as an offline rollback); `--keep N` and `--no-prune` change this. The
+`release/test-termux-install.sh` sandbox seeds fake old trees to check that
+behaviour on the device.
 
 ## Recovery Rules
 
