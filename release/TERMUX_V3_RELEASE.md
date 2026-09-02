@@ -141,7 +141,10 @@ bash release/build-termux-release.sh \
 
 Use `--skip-build` only when `apps/cli/dist` was built from the current commit.
 The archive and checksum are written to `release/dist/`, which is ignored by
-Git.
+Git. `manage.sh candidate` writes its payload and gate logs to
+`release/candidates/<tag>/` instead and, once the candidate is published,
+keeps only the newest three of those directories
+(`CLINE_TERMUX_KEEP_CANDIDATES` overrides the count).
 
 ## Public Install
 

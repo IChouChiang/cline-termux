@@ -717,6 +717,34 @@ echo "removed $removed stale staging entries"
 REMOTE
 }
 
+# release/candidates/<tag>/ keeps each candidate's payload and gate logs on
+# the workstation. Nothing after publication reads them (promote works from
+# the GitHub release), so keep only the newest few by version order and
+# remove the rest. Best effort: a cleanup problem must not fail the release.
+prune_local_candidates() {
+	local keep="${CLINE_TERMUX_KEEP_CANDIDATES:-3}"
+	require_positive_integer CLINE_TERMUX_KEEP_CANDIDATES "$keep"
+	local -a tags=()
+	local dir name
+	for dir in "$CANDIDATE_ROOT"/v*/; do
+		dir="${dir%/}"
+		[ -d "$dir" ] || continue
+		name="$(basename "$dir")"
+		[[ "$name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-termux\.[0-9]+$ ]] || continue
+		tags+=("$name")
+	done
+	local remove_count=$(( ${#tags[@]} - keep ))
+	[ "$remove_count" -gt 0 ] || return 0
+	while IFS= read -r name; do
+		[ -n "$name" ] || continue
+		if rm -rf "${CANDIDATE_ROOT:?}/${name:?}"; then
+			info "Removed old local candidate payload $name"
+		else
+			warn "could not remove $CANDIDATE_ROOT/$name"
+		fi
+	done < <(printf '%s\n' "${tags[@]}" | sort -V | head -n "$remove_count")
+}
+
 phone_local_bundle_test() {
 	local host="$1"
 	local candidate_dir="$2"
@@ -908,6 +936,7 @@ candidate_release() {
 
 	cleanup_candidate_run "$worktree" "$branch" "$candidate_temp"
 	trap - EXIT INT TERM
+	prune_local_candidates || warn "local candidate cleanup failed; the release is unaffected"
 	echo
 	ok "$release_tag is installed on $host and ready for manual testing"
 	echo "Please test on the S25 Ultra:"
