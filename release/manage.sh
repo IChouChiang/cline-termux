@@ -64,6 +64,12 @@ Commands:
   status
       Show the maintained version and GitHub release state.
 
+  cleanup [--keep N] [--host SSH_HOST] [--no-device]
+      Remove release leftovers: old release/candidates payloads (keeps the
+      newest N, default 3), stale release/dist bundles, unregistered
+      release/.work worktree directories, and the ~/tmp staging on the test
+      device. Never touches published releases, main, or user data.
+
 There is intentionally no range mode. Every upstream CLI tag is reviewed,
 tested on a physical device, and promoted independently.
 EOF
@@ -745,6 +751,97 @@ prune_local_candidates() {
 	done < <(printf '%s\n' "${tags[@]}" | sort -V | head -n "$remove_count")
 }
 
+# build-termux-release.sh writes to release/dist/ when run by hand; the
+# candidate flow redirects it into release/candidates/<tag>/. Any CLI bundle
+# still sitting in dist/ is therefore a manual build nobody publishes from.
+# The Bun FFI and OpenTUI assets in dist/ are inputs and stay.
+prune_stale_dist_bundles() {
+	local file removed=0
+	for file in "$SCRIPT_DIR"/dist/cline-termux-aarch64-v*.tar.gz \
+		"$SCRIPT_DIR"/dist/cline-termux-aarch64-v*.tar.gz.sha256; do
+		[ -f "$file" ] || continue
+		if rm -f "$file"; then
+			info "Removed stale dist bundle $(basename "$file")"
+			removed=$((removed + 1))
+		else
+			warn "could not remove $file"
+		fi
+	done
+	[ "$removed" -gt 0 ] || info "No stale dist bundles"
+}
+
+# release/.work/<tag> holds the candidate merge worktree; cleanup_candidate_run
+# removes it, but an interrupted run (or an older manage.sh) can leave a
+# multi-GB directory behind that git no longer knows about. Remove only
+# directories git does not list as worktrees, and drop the matching
+# termux-candidate-* branch when it is not checked out anywhere.
+prune_stale_work_dirs() {
+	local dir name branch removed=0
+	[ -d "$WORK_ROOT" ] || { info "No stale merge worktrees"; return 0; }
+	for dir in "$WORK_ROOT"/v*/; do
+		dir="${dir%/}"
+		[ -d "$dir" ] || continue
+		name="$(basename "$dir")"
+		if git -C "$REPO_ROOT" worktree list --porcelain | grep -Fxq "worktree $dir"; then
+			warn "keeping $dir: it is a registered git worktree (a candidate run may be active)"
+			continue
+		fi
+		if rm -rf "${WORK_ROOT:?}/${name:?}"; then
+			info "Removed stale merge worktree directory $name"
+			removed=$((removed + 1))
+		else
+			warn "could not remove $dir"
+			continue
+		fi
+		branch="termux-candidate-${name#v}"
+		if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$branch" \
+			&& ! git -C "$REPO_ROOT" worktree list --porcelain | grep -Fxq "branch refs/heads/$branch"; then
+			git -C "$REPO_ROOT" branch -D "$branch" >/dev/null 2>&1 \
+				&& info "Deleted orphan branch $branch"
+		fi
+	done
+	git -C "$REPO_ROOT" worktree prune
+	[ "$removed" -gt 0 ] || info "No stale merge worktrees"
+}
+
+cleanup_release() {
+	local host="$DEFAULT_HOST" device=true
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--keep)
+				[ -n "${2:-}" ] || fail "--keep requires a value"
+				CLINE_TERMUX_KEEP_CANDIDATES="$2"
+				shift 2
+				;;
+			--host)
+				[ -n "${2:-}" ] || fail "--host requires a value"
+				host="${2:-}"
+				shift 2
+				;;
+			--no-device)
+				device=false
+				shift
+				;;
+			*) fail "unknown cleanup option: $1" ;;
+		esac
+	done
+	export CLINE_TERMUX_KEEP_CANDIDATES="${CLINE_TERMUX_KEEP_CANDIDATES:-3}"
+	require_positive_integer CLINE_TERMUX_KEEP_CANDIDATES "$CLINE_TERMUX_KEEP_CANDIDATES"
+
+	info "Pruning local candidate payloads (keeping the newest $CLINE_TERMUX_KEEP_CANDIDATES)..."
+	prune_local_candidates
+	prune_stale_dist_bundles
+	prune_stale_work_dirs
+	if [ "$device" = true ]; then
+		if ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" true 2>/dev/null; then
+			clean_device_staging "$host"
+		else
+			warn "$host is unreachable; skipping device staging cleanup (rerun later or use --no-device)"
+		fi
+	fi
+	ok "Release leftovers cleaned"
+}
+
 phone_local_bundle_test() {
 	local host="$1"
 	local candidate_dir="$2"
@@ -1162,6 +1259,10 @@ case "${1:-}" in
 	status)
 		[ "$#" -eq 1 ] || fail "status takes no arguments"
 		show_status
+		;;
+	cleanup)
+		shift
+		cleanup_release "$@"
 		;;
 	-h|--help|help|'')
 		usage
