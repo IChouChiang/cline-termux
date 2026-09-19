@@ -153,6 +153,10 @@ if dpkg --compare-versions "$CLINE_VERSION" ge 3.0.43; then
 	INSTALLED_VERSION=$(CLINE_DIR="$CA_TEST_DIR" "$WORK_DIR/bin/cline" --version)
 	[ -s "$CA_TEST_DIR/cli-node-extra-ca-certs.pem" ] \
 		|| fail "Cline launcher did not create a managed OS trust bundle"
+	# The transpiler cache must land inside the release tree, not ~/.bun,
+	# so the installer's old-version prune can reclaim it.
+	[ -n "$(find "$WORK_DIR/opt/cline-termux/current/.transpiler-cache" -name '*.pile' -print -quit 2>/dev/null)" ] \
+		|| fail "Bun transpiler cache was not written inside the release tree"
 else
 	INSTALLED_VERSION=$("$WORK_DIR/bin/cline" --version)
 fi

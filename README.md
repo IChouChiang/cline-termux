@@ -85,6 +85,17 @@ curl -fsSL https://github.com/IChouChiang/cline-termux/releases/latest/download/
 The same settings are available as `CLINE_TERMUX_KEEP_VERSIONS` and
 `CLINE_TERMUX_PRUNE=0`. Nothing outside `$PREFIX/opt/cline-termux` is removed.
 
+Bun's transpiler cache lives inside each release tree
+(`<version>/.transpiler-cache`) and goes away with it. Releases before
+v3.0.63 wrote that cache to `~/.bun/install/cache/@t@` instead, about 40 MB
+per release, and never cleaned it. If you upgraded through several of them
+and do not use the official Bun for anything else, that directory can be
+deleted:
+
+```sh
+rm -rf ~/.bun/install/cache/@t@
+```
+
 ## Why Bun FFI Is Included
 
 Cline CLI v3 uses OpenTUI. OpenTUI loads its native renderer through
