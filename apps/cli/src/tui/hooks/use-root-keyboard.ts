@@ -213,6 +213,22 @@ export function useRootKeyboard(input: {
 			return;
 		}
 
+		if (
+			!hasInputText &&
+			hasQueuedPrompts &&
+			!key.shift &&
+			!key.ctrl &&
+			!key.meta &&
+			(key.name === "enter" || key.name === "return")
+		) {
+			key.preventDefault();
+			const firstPrompt = queuedSelection.items[0];
+			if (firstPrompt && !firstPrompt.steer && !key.repeated) {
+				queuedSelection.promote(firstPrompt.id);
+			}
+			return;
+		}
+
 		const termuxTouchScrollCommand = matchTermuxTranscriptTouchScrollKey({
 			enabled: input.termuxTranscriptTouchScroll === true,
 			key,
