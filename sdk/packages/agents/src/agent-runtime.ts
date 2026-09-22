@@ -361,9 +361,19 @@ function sanitizeHookAttribute(value: string): string {
 	return value.replace(/[_"<>]/g, (char) => HOOK_ATTRIBUTE_ESCAPES[char]);
 }
 
+/**
+ * Where a hook context block came from. Tool hooks carry the call they ran
+ * for; run-start hooks (TaskStart/UserPromptSubmit/TaskResume in their
+ * various layer spellings) have no tool identity, and the layers merge their
+ * outputs before the runtime sees them, so a single generic source labels
+ * those blocks.
+ */
+type HookContextOrigin =
+	| { source: "RunStart" }
+	| { source: "PreToolUse" | "PostToolUse"; toolCall: AgentToolCallPart };
+
 function formatHookContextBlock(
-	source: "PreToolUse" | "PostToolUse",
-	toolCall: AgentToolCallPart,
+	origin: HookContextOrigin,
 	text: string,
 ): string {
 	// Tool identity keeps each block attributable to its call: contexts are
@@ -373,10 +383,15 @@ function formatHookContextBlock(
 	// hook_context tags (opening and closing) neutralized so neither
 	// provider-supplied ids nor hook output can corrupt or spoof the block
 	// markup.
-	const toolName = sanitizeHookAttribute(toolCall.toolName);
-	const toolCallId = sanitizeHookAttribute(toolCall.toolCallId);
+	const attributes = [`source="${origin.source}"`];
+	if ("toolCall" in origin) {
+		attributes.push(
+			`tool_name="${sanitizeHookAttribute(origin.toolCall.toolName)}"`,
+			`tool_call_id="${sanitizeHookAttribute(origin.toolCall.toolCallId)}"`,
+		);
+	}
 	const body = text.trim().replace(/<(\/?)hook_context/gi, "<\\$1hook_context");
-	return `<hook_context source="${source}" tool_name="${toolName}" tool_call_id="${toolCallId}">\n${body}\n</hook_context>`;
+	return `<hook_context ${attributes.join(" ")}>\n${body}\n</hook_context>`;
 }
 
 function cloneMessages(messages: readonly AgentMessage[]): AgentMessage[] {
@@ -499,9 +514,10 @@ export class AgentRuntime {
 		onEvent: [],
 	};
 	/**
-	 * `appendContext` blocks collected from beforeTool/afterTool hooks during
-	 * the current iteration's tool executions, flushed as one user message
-	 * after the tool results so tool-result parts stay contiguous for
+	 * `appendContext` blocks waiting to be injected as one user message.
+	 * beforeRun hooks fill it before the run's first model request; beforeTool
+	 * and afterTool hooks fill it during an iteration's tool executions and it
+	 * flushes after the tool results, so tool-result parts stay contiguous for
 	 * providers that require them first in the following turn.
 	 */
 	private pendingHookContexts: string[] = [];
@@ -517,6 +533,8 @@ export class AgentRuntime {
 		usage: cloneUsage(DEFAULT_USAGE),
 		lastError: undefined as string | undefined,
 		lastErrorClass: undefined as ProviderErrorClass | undefined,
+		/** Provider-reported input tokens for the most recent request this run. */
+		lastRequestInputTokens: 0,
 		/**
 		 * Whether the last provider failure was transient and worth retrying,
 		 * carried from the model boundary via `errorRetryable` on the `finish`
@@ -537,6 +555,7 @@ export class AgentRuntime {
 	private overflowRecoveryAttempted = false;
 	private initialization?: Promise<void>;
 	private abortController?: AbortController;
+	private modelSteerController?: AbortController;
 	private readonly telemetryProviderId?: string;
 	private readonly telemetryModelId?: string;
 
@@ -564,6 +583,11 @@ export class AgentRuntime {
 
 	async continue(input?: AgentRunInput): Promise<AgentRunResult> {
 		return this.execute(input);
+	}
+
+	/** Interrupt only the current model request; running tools finish normally. */
+	notifyPendingUserMessage(): void {
+		this.modelSteerController?.abort();
 	}
 
 	abort(reason?: unknown): void {
@@ -730,6 +754,8 @@ export class AgentRuntime {
 		this.state.lastErrorReported = false;
 		this.state.usage = cloneUsage(DEFAULT_USAGE);
 		this.overflowRecoveryAttempted = false;
+		this.state.lastRequestInputTokens = 0;
+		this.pendingHookContexts = [];
 
 		try {
 			await this.callBeforeRunHooks();
@@ -749,6 +775,10 @@ export class AgentRuntime {
 				await this.addUserReminderMessage(completionToolReminder);
 			}
 
+			// Context collected by beforeRun hooks lands after the run's input
+			// messages so the model sees it on the first request of the run.
+			await this.flushPendingHookContexts();
+
 			let finalAssistantMessage: AgentMessage | undefined;
 
 			while (
@@ -767,8 +797,17 @@ export class AgentRuntime {
 				// A fresh error slate per turn: nothing from a previous turn may leak
 				// into this turn's error classification or retry decision.
 				this.resetLastError();
-				const { message, finishReason } =
+				const { message, finishReason, interrupted } =
 					await this.generateAssistantMessageWithProviderRetry();
+				if (interrupted && message.content.length === 0) {
+					await this.emit({
+						type: "turn-finished",
+						snapshot: this.snapshot(),
+						iteration: this.state.iteration,
+						toolCallCount: 0,
+					});
+					continue;
+				}
 				if (finishReason === "aborted") {
 					throw this.normalizeAbortError();
 				}
@@ -809,6 +848,16 @@ export class AgentRuntime {
 					message,
 					finishReason,
 				});
+
+				if (interrupted) {
+					await this.emit({
+						type: "turn-finished",
+						snapshot: this.snapshot(),
+						iteration: this.state.iteration,
+						toolCallCount: 0,
+					});
+					continue;
+				}
 
 				if (finishReason === "max-tokens" && toolCalls.length === 0) {
 					throw new Error(MAX_TOKENS_INCOMPLETE_TURN_MESSAGE);
@@ -853,24 +902,7 @@ export class AgentRuntime {
 						message: toolMessage,
 					});
 				}
-				if (this.pendingHookContexts.length > 0) {
-					const hookContextText = this.pendingHookContexts.join("\n\n");
-					this.pendingHookContexts = [];
-					// displayRole "system" keeps the injected block out of user-facing
-					// transcripts (live and replayed) while it still reaches the model,
-					// mirroring how compaction summaries are handled.
-					const hookContextMessage = createMessage(
-						"user",
-						[{ type: "text", text: hookContextText }],
-						{ userRunSpan: 0, displayRole: "system" },
-					);
-					this.state.messages.push(hookContextMessage);
-					await this.emit({
-						type: "message-added",
-						snapshot: this.snapshot(),
-						message: hookContextMessage,
-					});
-				}
+				await this.flushPendingHookContexts();
 				await this.emit({
 					type: "turn-finished",
 					snapshot: this.snapshot(),
@@ -967,12 +999,59 @@ export class AgentRuntime {
 		}
 	}
 
+	/**
+	 * Injects the collected hook context blocks as one user message at the end
+	 * of the conversation. Always delivers: the buffer is empty afterwards.
+	 */
+	private async flushPendingHookContexts(): Promise<void> {
+		if (this.pendingHookContexts.length === 0) {
+			return;
+		}
+		const hookContextText = this.pendingHookContexts.join("\n\n");
+		this.pendingHookContexts = [];
+		// displayRole "system" keeps the injected block out of user-facing
+		// transcripts (live and replayed) while it still reaches the model,
+		// mirroring how compaction summaries are handled.
+		const hookContextMessage = createMessage(
+			"user",
+			[{ type: "text", text: hookContextText }],
+			{ userRunSpan: 0, displayRole: "system" },
+		);
+		// Never insert between an assistant tool_use and its tool_result: a
+		// resumed session can be seeded with a trailing unresolved tool call,
+		// and a user message in that gap breaks providers' pairing rules. The
+		// context goes in ahead of that call instead — deferring it would only
+		// deliver if the model happened to call a tool next, and the buffer
+		// reset at the following run start would otherwise drop it.
+		const lastMessage = this.state.messages.at(-1);
+		const trailingToolCall =
+			lastMessage?.role === "assistant" &&
+			lastMessage.content.some((part) => part.type === "tool-call");
+		if (trailingToolCall) {
+			this.state.messages.splice(-1, 0, hookContextMessage);
+		} else {
+			this.state.messages.push(hookContextMessage);
+		}
+		await this.emit({
+			type: "message-added",
+			snapshot: this.snapshot(),
+			message: hookContextMessage,
+		});
+	}
+
 	private async callBeforeRunHooks(): Promise<void> {
 		for (const hook of this.hooks.beforeRun) {
-			const control = (await hook({
+			const result = await hook({
 				snapshot: this.snapshot(),
-			})) as AgentStopControl | undefined;
-			this.applyStopControl(control);
+			});
+			this.applyStopControl(result);
+			// Collected here, injected after the run's input messages are
+			// pushed, so the block lands in the same turn as the user prompt.
+			if (result?.appendContext?.trim()) {
+				this.pendingHookContexts.push(
+					formatHookContextBlock({ source: "RunStart" }, result.appendContext),
+				);
+			}
 		}
 	}
 
@@ -999,6 +1078,7 @@ export class AgentRuntime {
 	private async generateAssistantMessageWithProviderRetry(): Promise<{
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
+		interrupted?: boolean;
 	}> {
 		let attempt = 0;
 		for (;;) {
@@ -1117,6 +1197,7 @@ export class AgentRuntime {
 	private async generateAssistantMessageWithOverflowRecovery(): Promise<{
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
+		interrupted?: boolean;
 	}> {
 		const first = await this.generateAssistantMessage();
 		if (!this.isRecoverableOverflowTurn(first)) {
@@ -1179,6 +1260,26 @@ export class AgentRuntime {
 	}): Promise<{
 		message: AgentMessage;
 		finishReason: AgentModelFinishReason;
+		interrupted?: boolean;
+	}> {
+		const controller = new AbortController();
+		this.modelSteerController = controller;
+		try {
+			return await this.generateAssistantMessageForRequest(controller, options);
+		} finally {
+			this.modelSteerController = undefined;
+		}
+	}
+
+	private async generateAssistantMessageForRequest(
+		steerController: AbortController,
+		options?: {
+			overflowRecovery?: boolean;
+		},
+	): Promise<{
+		message: AgentMessage;
+		finishReason: AgentModelFinishReason;
+		interrupted?: boolean;
 	}> {
 		const usageBeforeModel = cloneUsage(this.state.usage);
 		const modelRequestMetadata = omitUndefinedValues({
@@ -1267,6 +1368,15 @@ export class AgentRuntime {
 			durationMs: getTaskLifecycleDurationMs(),
 			phase: "provider_request_started",
 		});
+		// Steering cancels provider generation, while request preparation keeps
+		// the run-level signal so compaction and hooks can finish consistently.
+		request = {
+			...request,
+			signal: AbortSignal.any([
+				steerController.signal,
+				...(this.abortController ? [this.abortController.signal] : []),
+			]),
+		};
 		const stream = this.openTaskLifecycleStream(
 			request,
 			getTaskLifecycleDurationMs,
@@ -1281,10 +1391,12 @@ export class AgentRuntime {
 		> = [];
 		let nextToolIndex = 0;
 		let finishReason: AgentModelFinishReason = "stop";
+		let requestId: string | undefined;
 		let accumulatedText = "";
 		let accumulatedReasoning = "";
 
 		for await (const event of stream) {
+			if (steerController.signal.aborted) break;
 			this.throwIfAborted();
 			switch (event.type) {
 				case "text-delta": {
@@ -1451,11 +1563,21 @@ export class AgentRuntime {
 					break;
 				}
 				case "usage": {
+					// Record the provider's own input-token count for this request so
+					// the prepare-turn pipeline can trigger compaction on real usage
+					// rather than a character-based estimate.
+					if (
+						typeof event.usage.inputTokens === "number" &&
+						event.usage.inputTokens > 0
+					) {
+						this.state.lastRequestInputTokens = event.usage.inputTokens;
+					}
 					await this.updateUsage(event.usage);
 					break;
 				}
 				case "finish": {
 					finishReason = event.reason;
+					requestId = event.requestId;
 					if (event.error) {
 						this.state.lastError = event.error;
 						// Models that classify at their own error boundary (where the
@@ -1476,8 +1598,18 @@ export class AgentRuntime {
 				}
 			}
 		}
+		this.throwIfAborted();
+		const interrupted = steerController.signal.aborted;
+		if (interrupted) finishReason = "stop";
 
 		for (const item of sequence) {
+			// A cancelled stream may contain incomplete tool JSON or unsigned
+			// reasoning. Keep only replayable visible content from that response.
+			if (
+				interrupted &&
+				(item.type === "tool" || item.part.type === "reasoning")
+			)
+				continue;
 			if (item.type === "part") {
 				content.push(item.part);
 				continue;
@@ -1539,11 +1671,12 @@ export class AgentRuntime {
 				snapshot: this.snapshot(),
 				assistantMessage: message,
 				finishReason,
+				...(requestId ? { requestId } : {}),
 			})) as AgentStopControl | undefined;
 			this.applyStopControl(control);
 		}
 
-		return { message, finishReason };
+		return { message, finishReason, interrupted };
 	}
 
 	private async *openTaskLifecycleStream(
@@ -1561,7 +1694,9 @@ export class AgentRuntime {
 				phase,
 			});
 		} catch (error) {
-			if (!this.isAbortError(error)) {
+			if (request.signal?.aborted && !this.abortController?.signal.aborted)
+				return;
+			if (!request.signal?.aborted && !this.isAbortError(error)) {
 				this.captureTaskLifecycleFailure(
 					error,
 					phase,
@@ -1586,7 +1721,9 @@ export class AgentRuntime {
 				yield event;
 			}
 		} catch (error) {
-			if (!this.isAbortError(error)) {
+			if (request.signal?.aborted && !this.abortController?.signal.aborted)
+				return;
+			if (!request.signal?.aborted && !this.isAbortError(error)) {
 				this.captureTaskLifecycleFailure(
 					error,
 					phase,
@@ -1699,6 +1836,10 @@ export class AgentRuntime {
 			},
 			signal: request.signal,
 			overflowRecovery: overflowRecovery || undefined,
+			previousRequestInputTokens:
+				this.state.lastRequestInputTokens > 0
+					? this.state.lastRequestInputTokens
+					: undefined,
 			emitStatusNotice: (message, metadata) => {
 				void this.emit({
 					type: "status-notice",
@@ -1797,15 +1938,33 @@ export class AgentRuntime {
 			prepared.push(await this.prepareToolExecution(toolCall));
 		}
 
-		if (this.config.toolExecution === "parallel") {
-			return Promise.all(
-				prepared.map((execution) => this.executePreparedTool(execution)),
-			);
-		}
-
 		const results: AgentMessage[] = [];
-		for (const execution of prepared) {
-			results.push(await this.executePreparedTool(execution));
+		for (let index = 0; index < prepared.length; ) {
+			const execution = prepared[index];
+			const mode = execution.tool?.executionMode ?? this.config.toolExecution;
+			if (mode === "sequential") {
+				results.push(await this.executePreparedTool(execution));
+				index += 1;
+				continue;
+			}
+
+			// Only adjacent parallel calls overlap. An ordinary sequential tool
+			// must wait for the group before it, and finish before the next group.
+			const start = index;
+			while (
+				index < prepared.length &&
+				(prepared[index].tool?.executionMode ?? this.config.toolExecution) ===
+					"parallel"
+			) {
+				index += 1;
+			}
+			results.push(
+				...(await Promise.all(
+					prepared
+						.slice(start, index)
+						.map((call) => this.executePreparedTool(call)),
+				)),
+			);
 		}
 		return results;
 	}
@@ -1888,8 +2047,7 @@ export class AgentRuntime {
 				if (result?.appendContext?.trim()) {
 					this.pendingHookContexts.push(
 						formatHookContextBlock(
-							"PreToolUse",
-							toolCall,
+							{ source: "PreToolUse", toolCall },
 							result.appendContext,
 						),
 					);
@@ -2044,8 +2202,7 @@ export class AgentRuntime {
 				if (after?.appendContext?.trim()) {
 					this.pendingHookContexts.push(
 						formatHookContextBlock(
-							"PostToolUse",
-							prepared.toolCall,
+							{ source: "PostToolUse", toolCall: prepared.toolCall },
 							after.appendContext,
 						),
 					);
