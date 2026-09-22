@@ -67,7 +67,9 @@
       "README.md",
       "bun.lock",
       "package.json",
-      "patches/@opentui-ui%2Fdialog@0.1.2.patch"
+      "patches/@opentui-ui%2Fdialog@0.1.2.patch",
+      "apps/cli/src/tui/hooks/use-root-keyboard.ts",
+      "apps/cli/src/tui/hooks/use-root-keyboard.test.ts"
     ]
   }
 }

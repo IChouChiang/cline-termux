@@ -690,6 +690,20 @@ resolve_expected_conflicts() {
 				warn "keeping the downstream $path; confirm it still carries upstream's hunks"
 				git -C "$worktree" restore --source=HEAD --staged --worktree "$path"
 				;;
+			apps/cli/src/tui/hooks/use-root-keyboard.ts \
+			|apps/cli/src/tui/hooks/use-root-keyboard.test.ts)
+				# The port dispatches Termux transcript touch scrolling from the same
+				# key-handling chain upstream keeps extending, and both sides insert
+				# at the same anchor, so git reports overlapping insertions even when
+				# the two handlers claim disjoint keys. Neither "ours" nor "theirs" is
+				# correct on its own: upstream's hunks are folded into the downstream
+				# copy by hand during inspect (verify with
+				#   diff <(git show <cli-tag>:<path>) <path>
+				# which must show only the port's own additions), so the downstream
+				# copy is the merged one and is kept here.
+				warn "keeping the downstream $path; confirm it still carries upstream's hunks"
+				git -C "$worktree" restore --source=HEAD --staged --worktree "$path"
+				;;
 			*) fail "no resolver is defined for allowed conflict: $path" ;;
 		esac
 	done
