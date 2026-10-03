@@ -28,7 +28,8 @@ read_field() {
 [ -x "$LAUNCHER" ] || fail "missing launcher: $LAUNCHER"
 [ -f "$INSTALL_BASE/current/VERSION" ] || fail "missing installed VERSION"
 [ -x "$BUN_BASE/current/bun" ] || fail "missing Bun FFI runtime"
-command -v pkill >/dev/null 2>&1 || fail "pkill is required for the TUI PTY smoke"
+command -v pkill >/dev/null 2>&1 && command -v pgrep >/dev/null 2>&1 \
+	|| fail "pkill and pgrep (procps) are required for the TUI and Hub smokes"
 
 VERSION_FILE="$INSTALL_BASE/current/VERSION"
 ACTUAL_RELEASE="$(read_field "$VERSION_FILE" release)"
@@ -142,11 +143,27 @@ acceptance_hub() {
 	timeout 60 env CLINE_DIR="$HUB_HOME" CLINE_HUB_PORT="$ACCEPTANCE_HUB_PORT" \
 		CLINE_NO_AUTO_UPDATE=1 "$LAUNCHER" hub "$@"
 }
+# `hub stop` only reaches a daemon through the discovery record in its data
+# directory. A daemon that outlived a failed `hub start` (it keeps booting after
+# the CLI's 15 s wait) or a killed run has none we can read, yet it holds the
+# port for good and fails every later attempt. Match it by command line
+# instead: an entry.js daemon on the acceptance port, never the user's Hub.
+kill_acceptance_hub() {
+	local pattern="/entry\.js .* --port $ACCEPTANCE_HUB_PORT "
+	pgrep -f -- "$pattern" >/dev/null 2>&1 || return 0
+	pkill -TERM -f -- "$pattern" 2>/dev/null || true
+	for _ in 1 2 3 4 5; do
+		pgrep -f -- "$pattern" >/dev/null 2>&1 || return 0
+		sleep 1
+	done
+	pkill -KILL -f -- "$pattern" 2>/dev/null || true
+}
 cleanup() {
 	stop_tui_smoke
 	if [ "$HUB_STARTED" = 1 ]; then
 		acceptance_hub stop >/dev/null 2>&1 || true
 	fi
+	kill_acceptance_hub
 	[ -z "$HUB_HOME" ] || rm -rf "$HUB_HOME"
 	rm -f "$LOG_FILE"
 }
@@ -181,6 +198,7 @@ ok "packaged TUI rendered its input screen in a pseudo-terminal"
 if dpkg --compare-versions "${EXPECTED_RELEASE#v}" ge 3.0.68-termux.2; then
 	[ -f "$RUNTIME_DIR/entry.js" ] || fail "missing Hub daemon entry: $RUNTIME_DIR/entry.js"
 	HUB_HOME="$(mktemp -d "$HOME/tmp/cline-termux-hub.XXXXXX")"
+	kill_acceptance_hub
 	HUB_STARTED=1
 	HUB_URL="$(acceptance_hub start | tail -n 1)" || {
 		tail -n 20 "$HUB_HOME/data/logs/hub-daemon.log" >&2 || true
@@ -198,6 +216,14 @@ if dpkg --compare-versions "${EXPECTED_RELEASE#v}" ge 3.0.68-termux.2; then
 	HUB_STOP="$(acceptance_hub stop)"
 	printf '%s\n' "$HUB_STOP" | rg -q '"stopped":true' \
 		|| fail "cline hub stop did not stop the Hub: $HUB_STOP"
+	# `hub stop` returns on the shutdown acknowledgement, not on process exit;
+	# make sure the daemon is really gone before its data directory goes.
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		kill -0 "$HUB_PID" 2>/dev/null || break
+		sleep 1
+	done
+	! kill -0 "$HUB_PID" 2>/dev/null \
+		|| fail "the Hub (pid $HUB_PID) is still alive 10 s after cline hub stop"
 	HUB_STARTED=0
 	ok "Hub daemon starts from this release and stops cleanly"
 fi

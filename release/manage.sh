@@ -772,6 +772,12 @@ clean_device_staging() {
 		|| warn "could not clean stale staging on $host; continuing"
 set -u
 shopt -s nullglob
+# A test Hub left behind by a killed acceptance run still holds its port after
+# its data directory is gone; stop it before sweeping (never the user's Hub).
+for port in 25496 25497; do
+	pkill -TERM -f -- "/entry\.js .* --port $port " 2>/dev/null \
+		&& echo "stopped a stale test Hub on port $port"
+done
 removed=0
 for path in \
 	"$HOME"/tmp/cline-termux-candidate-* \
@@ -1060,6 +1066,11 @@ candidate_release() {
 	git -C "$worktree" add -A
 	[ -z "$(git -C "$worktree" diff --name-only --diff-filter=U)" ] \
 		|| fail "unresolved merge conflicts remain"
+	# The worktree never gets husky's gitignored hook shim (dependencies are
+	# installed with --ignore-scripts), so upstream's pre-commit secret scan
+	# would silently not run on the candidate commit. Run the same scan here.
+	(cd "$worktree" && "$gitleaks_bin" git --pre-commit --redact --staged --verbose) \
+		|| fail "gitleaks reported a secret in the candidate commit"
 
 	run_gate "$log_dir" release-manager \
 		env TMPDIR="$candidate_temp" bash "$worktree/release/test-manager-downloads.sh"
@@ -1133,6 +1144,8 @@ candidate_release() {
 	echo "  2. Finger-scroll the transcript."
 	echo "  3. Open /settings, /model, and /history with the IME visible."
 	echo "  4. Send one real prompt and complete a short conversation."
+	echo "  5. Quit, run 'cline hub status' (must be running), background Termux"
+	echo "     with the screen off for 10-15 min, then check status and a TUI start."
 	echo
 	echo "After that passes:"
 	echo "  bash release/manage.sh promote $release_tag --confirm-manual-test"

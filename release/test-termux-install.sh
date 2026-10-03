@@ -61,6 +61,8 @@ done
 
 [ -n "${PREFIX:-}" ] || fail "PREFIX is not set; this must run inside Termux"
 [ "$(uname -m)" = "aarch64" ] || fail "expected aarch64 Termux"
+command -v pkill >/dev/null 2>&1 && command -v pgrep >/dev/null 2>&1 \
+	|| fail "pkill and pgrep (procps) are required for the sandbox Hub check"
 [ -n "$TARBALL" ] || fail "--from-tarball is required"
 [ -f "$TARBALL" ] || fail "tarball not found: $TARBALL"
 if [ -n "$BUN_TARBALL" ]; then
@@ -83,10 +85,27 @@ sandbox_hub() {
 		"$WORK_DIR/bin/cline" hub "$@"
 }
 
+# `hub stop` only reaches a daemon through the discovery record in its data
+# directory. A daemon that outlived a failed `hub start` (it keeps booting after
+# the CLI's 15 s wait) or a killed run has none we can read, yet it holds the
+# port for good and fails every later run. Match it by command line instead:
+# an entry.js daemon on the sandbox port, never the user's Hub.
+kill_sandbox_hub() {
+	local pattern="/entry\.js .* --port $SANDBOX_HUB_PORT "
+	pgrep -f -- "$pattern" >/dev/null 2>&1 || return 0
+	pkill -TERM -f -- "$pattern" 2>/dev/null || true
+	for _ in 1 2 3 4 5; do
+		pgrep -f -- "$pattern" >/dev/null 2>&1 || return 0
+		sleep 1
+	done
+	pkill -KILL -f -- "$pattern" 2>/dev/null || true
+}
+
 cleanup() {
 	if [ "$SANDBOX_HUB_STARTED" = 1 ]; then
 		sandbox_hub stop >/dev/null 2>&1 || true
 	fi
+	kill_sandbox_hub
 	if [ "$KEEP_WORK" = false ] && [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
 		rm -rf "$WORK_DIR"
 	fi
@@ -181,6 +200,7 @@ ok "Install smoke passed: cline --version -> $INSTALLED_VERSION"
 
 # The Hub daemon is launched as `<runtime> <release>/entry.js`. Prove it starts
 # here, before anything is published, not only after the release tag exists.
+kill_sandbox_hub
 SANDBOX_HUB_STARTED=1
 HUB_URL="$(sandbox_hub start | tail -n 1)" || {
 	tail -n 20 "$WORK_DIR/hub-home/data/logs/hub-daemon.log" >&2 || true
@@ -198,6 +218,14 @@ HUB_ENTRY="$(tr '\0' '\n' < "/proc/$HUB_PID/cmdline" | sed -n 2p)"
 HUB_STOP="$(sandbox_hub stop)"
 printf '%s\n' "$HUB_STOP" | rg -q '"stopped":true' \
 	|| fail "cline hub stop did not stop the sandbox Hub: $HUB_STOP"
+# `hub stop` returns on the shutdown acknowledgement, not on process exit;
+# make sure the daemon is really gone before the sandbox tree goes.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	kill -0 "$HUB_PID" 2>/dev/null || break
+	sleep 1
+done
+! kill -0 "$HUB_PID" 2>/dev/null \
+	|| fail "the sandbox Hub (pid $HUB_PID) is still alive 10 s after cline hub stop"
 SANDBOX_HUB_STARTED=0
 ok "Sandbox Hub daemon started from entry.js and stopped"
 

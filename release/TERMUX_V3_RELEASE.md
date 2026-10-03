@@ -72,8 +72,9 @@ not.
 The shell tool's default shell on Android is `$PREFIX/bin/bash`
 (`sdk/packages/shared/src/parse/shell.ts`); upstream hardcodes `/bin/bash`,
 which only resolves on Termux when `termux-exec` rewrites the exec. That file
-is deliberately not in the merge-conflict allowlist: if upstream edits it,
-inspection blocks so the Android branch is folded in by hand.
+is deliberately not in the merge-conflict allowlist: an upstream edit that
+merges cleanly keeps the Android branch, and one that conflicts with it blocks
+inspection so the branch is folded in by hand.
 
 ## Managed Flow
 
@@ -103,10 +104,12 @@ The candidate command:
 6. tests the release-manager download safeguards
 7. runs SDK build, CLI unit tests, typecheck, CLI build, and official TUI tests
 8. creates a deterministic Android ARM64 archive
-9. tests the unpublished archive in a Termux sandbox on the S25 Ultra
+9. tests the unpublished archive in a Termux sandbox on the S25 Ultra,
+   including a Hub daemon start, status and stop on an isolated port
 10. pushes the final tag and creates a public GitHub prerelease
 11. installs that exact release URL on the S25 Ultra
-12. runs version, help, FFI `dlopen`, and a bounded-retry visible-frame TUI check
+12. runs version, help, FFI `dlopen`, a bounded-retry visible-frame TUI
+    check and, from `3.0.68-termux.2`, the same isolated Hub start/stop check
 
 The official TUI suite creates many isolated Cline homes without removing them.
 The manager points `TMPDIR` at a disposable run directory under
@@ -145,6 +148,16 @@ On the S25 Ultra:
 3. finger-scroll the transcript
 4. open `/settings`, `/model`, and `/history` with the IME visible
 5. send one real prompt and complete a short conversation
+6. quit the TUI and run `cline hub status`: it must report `running` (the
+   session auto-started the Hub daemon, which now outlives it)
+7. put Termux in the background with the screen off for 10–15 minutes, come
+   back, run `cline hub status` again, then start `cline --tui` once more and
+   check that `~/.cline/data/logs/cline.log` does not log "Falling back to
+   local runtime host" for that start
+
+Before the first Hub ever runs on a device, check what it will pick up:
+schedules and connectors configured during earlier experiments never fired
+while the Hub could not start, and become live with it.
 
 Promote only after those checks pass:
 
@@ -179,7 +192,9 @@ bash release/build-termux-release.sh \
   --release v3.0.30-termux.1
 ```
 
-Use `--skip-build` only when `apps/cli/dist` was built from the current commit.
+Use `--skip-build` only when `apps/cli/dist` was built from the current commit
+with `CLINE_BUNDLE_EXTERNAL=ws` set (the script refuses a bundle that inlines
+`ws`).
 The archive and checksum are written to `release/dist/`, which is ignored by
 Git. `manage.sh candidate` writes its payload and gate logs to
 `release/candidates/<tag>/` instead and, once the candidate is published,
