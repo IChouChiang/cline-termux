@@ -51,11 +51,14 @@ Usage: bash release/manage.sh COMMAND [options]
 
 Commands:
   inspect CLI_TAG
-      Read-only review of one next upstream CLI release.
+      Read-only review of one next upstream CLI release. Given the tag main
+      already carries, reviews the next downstream revision instead.
 
   candidate CLI_TAG [--revision N] [--host SSH_HOST]
       Merge exactly one release in an isolated worktree, run source and package
       gates, publish a prerelease, and install that exact tag on the test phone.
+      Given the tag main already carries, builds downstream revision N (which
+      must exceed the current one) from main's port changes, without a merge.
 
   promote RELEASE_TAG --confirm-manual-test [--host SSH_HOST]
       Fast-forward main to the tested candidate and promote the unchanged
@@ -374,7 +377,7 @@ next_stable_cli_tag() {
 	git -C "$REPO_ROOT" ls-remote --refs --tags upstream 'refs/tags/cli-v*' \
 		| sed -n 's#.*refs/tags/\(cli-v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$#\1#p' \
 		| sort -V \
-		| awk -v current="$current" '$0 == current { getline; print; exit }'
+		| awk -v current="$current" 'found { print; exit } $0 == current { found = 1 }'
 }
 
 manifest_from_ref() {
@@ -503,6 +506,54 @@ inspect_release() {
 		fail "inspection blocked automated candidate preparation"
 	fi
 	ok "$target_tag is ready for one-version candidate preparation"
+	warn_unexpected_active_workflows
+}
+
+# A downstream revision rebuilds the upstream tag main already carries with
+# port changes only. Nothing is merged, so no upstream change can ride along;
+# a newer upstream tag still gets its own one-tag cycle.
+inspect_revision() {
+	local target_tag="$1"
+	local revision="${2:-}"
+	local current_commit target_commit current_release current_revision
+	local cli_version release_tag next_tag
+
+	validate_cli_tag "$target_tag"
+	[ "$target_tag" = "$(json_get "$MANIFEST" upstream.tag)" ] \
+		|| fail "$target_tag is not the upstream tag main already carries"
+	current_commit="$(json_get "$MANIFEST" upstream.commit)"
+	current_release="$(json_get "$MANIFEST" termux.releaseTag)"
+	current_revision="$(json_get "$MANIFEST" termux.revision)"
+	cli_version="$(json_get "$MANIFEST" upstream.cliVersion)"
+	[ -n "$revision" ] || revision=$((current_revision + 1))
+	release_tag="v$cli_version-termux.$revision"
+	fetch_upstream_tag "$target_tag"
+	target_commit="$(git -C "$REPO_ROOT" rev-parse "$target_tag^{}")"
+	git -C "$REPO_ROOT" fetch --quiet origin "refs/tags/$current_release:refs/tags/$current_release"
+	next_tag="$(next_stable_cli_tag "$target_tag")"
+
+	echo
+	echo "Upstream (unchanged): $target_tag ($target_commit)"
+	echo "Current release:      $current_release"
+	echo "Requested release:    $release_tag"
+	echo "Newer upstream:       ${next_tag:-none}${next_tag:+ (not part of this revision)}"
+	echo
+
+	[ "$target_commit" = "$current_commit" ] \
+		|| fail "$target_tag no longer points at the recorded upstream commit $current_commit"
+	[ "$revision" -gt "$current_revision" ] \
+		|| fail "$release_tag does not follow $current_release; pass --revision $((current_revision + 1)) or higher"
+	git -C "$REPO_ROOT" merge-base --is-ancestor "$current_release" HEAD \
+		|| fail "main does not contain $current_release"
+	! git -C "$REPO_ROOT" diff --quiet "$current_release" HEAD \
+		|| fail "main has no downstream changes since $current_release"
+
+	echo "Downstream changes since $current_release:"
+	git -C "$REPO_ROOT" log --no-merges --format='  %h %s' "$current_release..HEAD"
+	echo
+	git -C "$REPO_ROOT" diff --stat "$current_release" HEAD
+	echo
+	ok "$release_tag is ready for downstream revision candidate preparation"
 	warn_unexpected_active_workflows
 }
 
@@ -725,6 +776,7 @@ removed=0
 for path in \
 	"$HOME"/tmp/cline-termux-candidate-* \
 	"$HOME"/tmp/cline-termux-install-test.* \
+	"$HOME"/tmp/cline-termux-hub.* \
 	"$HOME"/tmp/test-installed-v*.sh \
 	"$HOME"/tmp/test-installed-latest.sh; do
 	if rm -rf "${path:?}"; then
@@ -934,11 +986,19 @@ candidate_release() {
 	git -C "$REPO_ROOT" fetch --quiet origin main
 	[ "$(git -C "$REPO_ROOT" rev-parse HEAD)" = "$(git -C "$REPO_ROOT" rev-parse origin/main)" ] \
 		|| fail "local main must exactly match origin/main before candidate preparation"
-	inspect_release "$target_tag"
+	local revision_mode=false previous_release
+	previous_release="$(json_get "$MANIFEST" termux.releaseTag)"
+	if [ "$target_tag" = "$(json_get "$MANIFEST" upstream.tag)" ]; then
+		revision_mode=true
+		inspect_revision "$target_tag" "$revision"
+	else
+		inspect_release "$target_tag"
+	fi
 
 	local target_commit cli_version release_tag release_name branch worktree candidate_dir
 	local bun_version bun_bin gitleaks_version gitleaks_bin patchelf_version patchelf_bin
 	local log_dir merge_status candidate_commit notes_file candidate_temp cleanup_trap
+	local commit_message
 	target_commit="$(git -C "$REPO_ROOT" rev-parse "$target_tag^{}")"
 	cli_version="$(git_json_get "$target_tag" apps/cli/package.json version)"
 	release_tag="v$cli_version-termux.$revision"
@@ -976,16 +1036,22 @@ candidate_release() {
 	git -C "$REPO_ROOT" worktree prune
 	git -C "$REPO_ROOT" worktree add -q -b "$branch" "$worktree" main
 
-	info "Merging $target_tag in isolated worktree..."
-	set +e
-	git -C "$worktree" merge --no-ff --no-commit "$target_commit"
-	merge_status=$?
-	set -e
-	if [ "$merge_status" -ne 0 ]; then
-		resolve_expected_conflicts "$worktree" "$target_commit"
+	if [ "$revision_mode" = true ]; then
+		info "Building downstream revision $release_tag on unchanged $target_tag..."
+		commit_message="chore(termux): release $release_tag"
+	else
+		info "Merging $target_tag in isolated worktree..."
+		set +e
+		git -C "$worktree" merge --no-ff --no-commit "$target_commit"
+		merge_status=$?
+		set -e
+		if [ "$merge_status" -ne 0 ]; then
+			resolve_expected_conflicts "$worktree" "$target_commit"
+		fi
+		[ -f "$worktree/.git/MERGE_HEAD" ] || [ -f "$(git -C "$worktree" rev-parse --git-path MERGE_HEAD)" ] \
+			|| fail "the upstream merge did not leave a merge candidate"
+		commit_message="chore(termux): update to cli v$cli_version"
 	fi
-	[ -f "$worktree/.git/MERGE_HEAD" ] || [ -f "$(git -C "$worktree" rev-parse --git-path MERGE_HEAD)" ] \
-		|| fail "the upstream merge did not leave a merge candidate"
 
 	node "$worktree/release/port-metadata.mjs" update \
 		"$target_tag" "$target_commit" "$release_tag"
@@ -1009,7 +1075,7 @@ candidate_release() {
 		env TMPDIR="$candidate_temp" bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli test:e2e:cli:tui"
 
 	PATH="$(dirname "$gitleaks_bin"):$PATH" \
-		git -C "$worktree" commit -m "chore(termux): update to cli v$cli_version"
+		git -C "$worktree" commit -m "$commit_message"
 	candidate_commit="$(git -C "$worktree" rev-parse HEAD)"
 	CLINE_TERMUX_DIST_DIR="$candidate_dir" \
 		BUN_BIN="$bun_bin" \
@@ -1028,11 +1094,21 @@ candidate_release() {
 	printf '%s\n' \
 		"Native Termux port of upstream Cline CLI $cli_version for Android aarch64." \
 		"" \
+		> "$notes_file"
+	if [ "$revision_mode" = true ]; then
+		{
+			echo "Downstream revision: upstream is unchanged since $previous_release. Port changes:"
+			echo
+			git -C "$worktree" log --no-merges --format='- %s' "$previous_release..$candidate_commit^"
+			echo
+		} >> "$notes_file"
+	fi
+	printf '%s\n' \
 		"This is a release candidate pending physical touch, IME, dialog, and real-conversation testing on the S25 Ultra." \
 		"" \
 		"Upstream: https://github.com/cline/cline/releases/tag/$target_tag" \
 		"Source commit: $candidate_commit" \
-		> "$notes_file"
+		>> "$notes_file"
 	gh release create "$release_tag" \
 		"$candidate_dir/$release_name.tar.gz" \
 		"$candidate_dir/$release_name.tar.gz.sha256" \
@@ -1256,7 +1332,11 @@ case "${1:-}" in
 	inspect)
 		[ "$#" -eq 2 ] || fail "inspect requires exactly one CLI tag"
 		require_clean_main
-		inspect_release "$2"
+		if [ "$2" = "$(json_get "$MANIFEST" upstream.tag)" ]; then
+			inspect_revision "$2"
+		else
+			inspect_release "$2"
+		fi
 		;;
 	candidate)
 		[ "$#" -ge 2 ] || fail "candidate requires a CLI tag"

@@ -176,7 +176,8 @@ ok "packaged TUI rendered its input screen in a pseudo-terminal"
 # The Hub daemon is spawned as `<runtime> <release>/entry.js`. Releases before
 # 3.0.68-termux.2 shipped no entry.js, so every start failed and the CLI
 # quietly ran in-process. From then on a Hub must start from this exact
-# release and stop again, leaving nothing running on the device.
+# release and stop again. That check is isolated; the TUI smoke above, like
+# any TUI session, may still leave the user's own auto-started Hub running.
 if dpkg --compare-versions "${EXPECTED_RELEASE#v}" ge 3.0.68-termux.2; then
 	[ -f "$RUNTIME_DIR/entry.js" ] || fail "missing Hub daemon entry: $RUNTIME_DIR/entry.js"
 	HUB_HOME="$(mktemp -d "$HOME/tmp/cline-termux-hub.XXXXXX")"

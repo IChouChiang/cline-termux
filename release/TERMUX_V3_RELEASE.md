@@ -50,6 +50,19 @@ that existing platform rule to Android, where enabling the thread prevents the
 renderer and Bun event loop from making progress. The package and phone gates
 verify that this pinned patch is present before accepting a candidate.
 
+The archive adds an `entry.js` beside `index.js`. Upstream starts its Hub
+daemon as `<runtime> <bundle dir>/entry.js` with `CLINE_RUN_AS_HUB_DAEMON=1`;
+its compiled binaries re-exec an embedded entry instead, so its JS bundle has
+none, and without it every Hub start fails and the CLI silently runs
+in-process. From `3.0.68-termux.2` the device acceptance starts a Hub from the
+installed release, checks that it runs this release's `entry.js`, and stops it.
+
+The shell tool's default shell on Android is `$PREFIX/bin/bash`
+(`sdk/packages/shared/src/parse/shell.ts`); upstream hardcodes `/bin/bash`,
+which only resolves on Termux when `termux-exec` rewrites the exec. That file
+is deliberately not in the merge-conflict allowlist: if upstream edits it,
+inspection blocks so the Android branch is folded in by hand.
+
 ## Managed Flow
 
 Inspect exactly the next stable CLI release:
@@ -95,6 +108,21 @@ on success, failure, or interruption. Override the location with
 Nothing is pushed before the source and unpublished-package gates pass. The
 candidate tag uses the final release name, such as `v3.0.30-termux.1`, so the
 same immutable assets can later be promoted without rebuilding.
+
+A port-only release on the upstream tag `main` already carries uses the same
+commands with that tag:
+
+```sh
+bash release/manage.sh inspect cli-v3.0.68
+bash release/manage.sh candidate cli-v3.0.68 --revision 2
+```
+
+The manager recognises the tag from `port-manifest.json` and skips the merge,
+so no upstream change can ride along. It requires the revision to exceed the
+current one, the upstream tag to still point at the recorded commit, and
+`main` to contain and differ from the current release tag. The release notes
+list the port commits since that tag. Every other gate, and promotion, is
+unchanged.
 
 ## Manual Candidate Test
 
