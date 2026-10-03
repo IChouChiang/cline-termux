@@ -179,6 +179,15 @@ mkdir -p "$STAGE_DIR" "$DIST_DIR"
 info "Copying the Cline bundle..."
 cp "$CLI_DIR/dist/index.js" "$STAGE_DIR/index.js"
 chmod +x "$STAGE_DIR/index.js"
+# The Hub daemon is spawned as `<runtime> <bundle dir>/entry.js` with
+# CLINE_RUN_AS_HUB_DAEMON=1 (sdk/packages/core/src/hub/daemon/index.ts).
+# Upstream ships compiled binaries, which re-exec an embedded entry instead,
+# so its JS bundle has no entry.js: without one every daemon start fails and
+# the CLI silently runs in-process. Re-entering the bundle is enough, because
+# index.js switches to the daemon personality on that environment marker.
+rg -q 'new URL\(`\./entry\.\$\{' "$STAGE_DIR/index.js" \
+	|| fail "the bundled Hub daemon no longer resolves ./entry.js beside index.js; revisit the entry shim"
+printf '%s\n' 'import "./index.js";' > "$STAGE_DIR/entry.js"
 cp -R "$CLI_DIR/dist/extensions" "$STAGE_DIR/extensions"
 cp -R "$CLI_DIR/dist/cline-hub" "$STAGE_DIR/cline-hub"
 cp "$SCRIPT_DIR/install-cline-termux.sh" "$STAGE_DIR/install.sh"

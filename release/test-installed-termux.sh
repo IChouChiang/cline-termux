@@ -133,8 +133,21 @@ stop_tui_smoke() {
 	sleep 1
 	pkill -KILL -f "$TUI_PROCESS_PATTERN" 2>/dev/null || true
 }
+# The acceptance Hub gets its own data directory and port, so it neither meets
+# nor stops a Hub the user already runs.
+ACCEPTANCE_HUB_PORT=25496
+HUB_HOME=""
+HUB_STARTED=0
+acceptance_hub() {
+	timeout 60 env CLINE_DIR="$HUB_HOME" CLINE_HUB_PORT="$ACCEPTANCE_HUB_PORT" \
+		CLINE_NO_AUTO_UPDATE=1 "$LAUNCHER" hub "$@"
+}
 cleanup() {
 	stop_tui_smoke
+	if [ "$HUB_STARTED" = 1 ]; then
+		acceptance_hub stop >/dev/null 2>&1 || true
+	fi
+	[ -z "$HUB_HOME" ] || rm -rf "$HUB_HOME"
 	rm -f "$LOG_FILE"
 }
 trap cleanup EXIT
@@ -159,5 +172,33 @@ if rg -a -qi \
 	fail "packaged TUI reported a module or native-library load failure"
 fi
 ok "packaged TUI rendered its input screen in a pseudo-terminal"
+
+# The Hub daemon is spawned as `<runtime> <release>/entry.js`. Releases before
+# 3.0.68-termux.2 shipped no entry.js, so every start failed and the CLI
+# quietly ran in-process. From then on a Hub must start from this exact
+# release and stop again, leaving nothing running on the device.
+if dpkg --compare-versions "${EXPECTED_RELEASE#v}" ge 3.0.68-termux.2; then
+	[ -f "$RUNTIME_DIR/entry.js" ] || fail "missing Hub daemon entry: $RUNTIME_DIR/entry.js"
+	HUB_HOME="$(mktemp -d "$HOME/tmp/cline-termux-hub.XXXXXX")"
+	HUB_STARTED=1
+	HUB_URL="$(acceptance_hub start | tail -n 1)" || {
+		tail -n 20 "$HUB_HOME/data/logs/hub-daemon.log" >&2 || true
+		fail "cline hub start did not bring up a Hub"
+	}
+	[ "$HUB_URL" = "ws://127.0.0.1:$ACCEPTANCE_HUB_PORT/hub" ] \
+		|| fail "cline hub start reported an unexpected URL: ${HUB_URL:-<empty>}"
+	HUB_STATUS="$(acceptance_hub status)"
+	HUB_PID="$(printf '%s\n' "$HUB_STATUS" | sed -n 's/.*"running":true.*"pid":\([0-9][0-9]*\).*/\1/p')"
+	[ -n "$HUB_PID" ] && [ -r "/proc/$HUB_PID/cmdline" ] \
+		|| fail "cline hub status reported no live Hub process: $HUB_STATUS"
+	HUB_ENTRY="$(tr '\0' '\n' < "/proc/$HUB_PID/cmdline" | sed -n 2p)"
+	[ "$(realpath "$HUB_ENTRY" 2>/dev/null)" = "$RUNTIME_DIR/entry.js" ] \
+		|| fail "the running Hub (pid $HUB_PID, entry ${HUB_ENTRY:-?}) is not this release's daemon"
+	HUB_STOP="$(acceptance_hub stop)"
+	printf '%s\n' "$HUB_STOP" | rg -q '"stopped":true' \
+		|| fail "cline hub stop did not stop the Hub: $HUB_STOP"
+	HUB_STARTED=0
+	ok "Hub daemon starts from this release and stops cleanly"
+fi
 
 ok "Installed candidate acceptance passed for $EXPECTED_RELEASE"

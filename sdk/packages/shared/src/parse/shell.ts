@@ -9,6 +9,13 @@ function normalizeShellName(shell: string): string {
 }
 
 export function getDefaultShell(platform: string): string {
+	// Termux has no /bin: its bash lives under $PREFIX, and /bin/bash only
+	// resolves when termux-exec happens to rewrite the exec.
+	if (platform === "android") {
+		const prefix =
+			typeof process === "undefined" ? undefined : process.env.PREFIX?.trim();
+		return prefix ? `${prefix}/bin/bash` : "/system/bin/sh";
+	}
 	return platform === "win32" ? "powershell" : "/bin/bash";
 }
 

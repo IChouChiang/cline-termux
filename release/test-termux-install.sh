@@ -74,7 +74,19 @@ else
 	mkdir -p "$WORK_DIR"
 fi
 
+# The sandbox Hub gets its own data directory and port, so it never meets a
+# Hub the device already runs.
+SANDBOX_HUB_PORT=25497
+SANDBOX_HUB_STARTED=0
+sandbox_hub() {
+	timeout 60 env CLINE_DIR="$WORK_DIR/hub-home" CLINE_HUB_PORT="$SANDBOX_HUB_PORT" \
+		"$WORK_DIR/bin/cline" hub "$@"
+}
+
 cleanup() {
+	if [ "$SANDBOX_HUB_STARTED" = 1 ]; then
+		sandbox_hub stop >/dev/null 2>&1 || true
+	fi
 	if [ "$KEEP_WORK" = false ] && [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
 		rm -rf "$WORK_DIR"
 	fi
@@ -118,6 +130,7 @@ CLINE_TERMUX_FORCE=1 \
 [ -x "$WORK_DIR/bin/cline" ] || fail "test launcher was not created"
 [ -L "$WORK_DIR/opt/cline-termux/current" ] || fail "current symlink was not created"
 [ -f "$WORK_DIR/opt/cline-termux/current/index.js" ] || fail "index.js missing from install"
+[ -f "$WORK_DIR/opt/cline-termux/current/entry.js" ] || fail "Hub daemon entry.js missing from install"
 [ -x "$WORK_DIR/opt/bun-android-ffi/current/bun" ] || fail "Bun FFI runtime missing from install"
 [ -L "$WORK_DIR/bin/bun-ffi" ] || fail "bun-ffi symlink was not created"
 [ -f "$WORK_DIR/opt/cline-termux/current/node_modules/@opentui/core-android-arm64/libopentui.so" ] \
@@ -165,6 +178,28 @@ fi
 
 "$WORK_DIR/bin/cline" --help >/dev/null
 ok "Install smoke passed: cline --version -> $INSTALLED_VERSION"
+
+# The Hub daemon is launched as `<runtime> <release>/entry.js`. Prove it starts
+# here, before anything is published, not only after the release tag exists.
+SANDBOX_HUB_STARTED=1
+HUB_URL="$(sandbox_hub start | tail -n 1)" || {
+	tail -n 20 "$WORK_DIR/hub-home/data/logs/hub-daemon.log" >&2 || true
+	fail "cline hub start did not bring up a sandbox Hub"
+}
+[ "$HUB_URL" = "ws://127.0.0.1:$SANDBOX_HUB_PORT/hub" ] \
+	|| fail "sandbox Hub reported an unexpected URL: ${HUB_URL:-<empty>}"
+HUB_STATUS="$(sandbox_hub status)"
+HUB_PID="$(printf '%s\n' "$HUB_STATUS" | sed -n 's/.*"running":true.*"pid":\([0-9][0-9]*\).*/\1/p')"
+[ -n "$HUB_PID" ] && [ -r "/proc/$HUB_PID/cmdline" ] \
+	|| fail "cline hub status reported no live sandbox Hub: $HUB_STATUS"
+HUB_ENTRY="$(tr '\0' '\n' < "/proc/$HUB_PID/cmdline" | sed -n 2p)"
+[ "$(readlink -f "$HUB_ENTRY")" = "$(readlink -f "$WORK_DIR/opt/cline-termux/current/entry.js")" ] \
+	|| fail "the sandbox Hub (pid $HUB_PID) runs ${HUB_ENTRY:-?}, not this release's entry.js"
+HUB_STOP="$(sandbox_hub stop)"
+printf '%s\n' "$HUB_STOP" | rg -q '"stopped":true' \
+	|| fail "cline hub stop did not stop the sandbox Hub: $HUB_STOP"
+SANDBOX_HUB_STARTED=0
+ok "Sandbox Hub daemon started from entry.js and stopped"
 
 if [ "$KEEP_WORK" = true ]; then
 	echo "Sandbox: $WORK_DIR"
