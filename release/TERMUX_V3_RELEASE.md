@@ -57,6 +57,18 @@ none, and without it every Hub start fails and the CLI silently runs
 in-process. From `3.0.68-termux.2` the device acceptance starts a Hub from the
 installed release, checks that it runs this release's `entry.js`, and stops it.
 
+The bundle also keeps the `ws` package external (`CLINE_BUNDLE_EXTERNAL=ws`,
+honoured by `apps/cli/bun.mts`; `manage.sh` sets it for the `cli-build` gate
+and `build-termux-release.sh` refuses a bundle that inlines `ws`). The Hub
+speaks `ws` over `node:http`, and the Android Bun's `node:http` client never
+surfaces the upgrade response: a bundled `ws` client times out on every Hub
+handshake, so `hub start` still failed after 15 s with `entry.js` in place.
+Left external, the device Bun resolves `ws` to its own WebSocket-backed
+replacement, which connects. The runtime tree still carries `ws` 7 as a
+dependency of `react-devtools-core`; the current device Bun prefers its
+built-in regardless, and the sandbox Hub check covers any runtime that does
+not.
+
 The shell tool's default shell on Android is `$PREFIX/bin/bash`
 (`sdk/packages/shared/src/parse/shell.ts`); upstream hardcodes `/bin/bash`,
 which only resolves on Termux when `termux-exec` rewrites the exec. That file

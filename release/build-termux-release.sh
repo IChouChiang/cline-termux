@@ -165,7 +165,7 @@ if [ "$SKIP_BUILD" = false ]; then
 	info "Building @cline/cli with $BUN_BIN..."
 	(
 		cd "$REPO_ROOT"
-		"$BUN_BIN" -F @cline/cli build
+		CLINE_BUNDLE_EXTERNAL=ws "$BUN_BIN" -F @cline/cli build
 	)
 fi
 
@@ -188,6 +188,16 @@ chmod +x "$STAGE_DIR/index.js"
 rg -q 'new URL\(`\./entry\.\$\{' "$STAGE_DIR/index.js" \
 	|| fail "the bundled Hub daemon no longer resolves ./entry.js beside index.js; revisit the entry shim"
 printf '%s\n' 'import "./index.js";' > "$STAGE_DIR/entry.js"
+# The Hub speaks `ws` over node:http. The Android Bun's node:http client never
+# surfaces the upgrade response, so a bundled `ws` client times out on every
+# Hub handshake (hub start fails after 15 s; auto mode silently stays
+# in-process). The Termux bundle therefore keeps `ws` external
+# (apps/cli/bun.mts, CLINE_BUNDLE_EXTERNAL=ws) and the device Bun resolves it
+# to its own WebSocket-backed `ws` replacement, which does connect.
+rg -q 'from "ws"' "$STAGE_DIR/index.js" \
+	|| fail "the bundle does not import ws externally; build @cline/cli with CLINE_BUNDLE_EXTERNAL=ws"
+! rg -q 'WebSocket was closed before the connection was established' "$STAGE_DIR/index.js" \
+	|| fail "the bundle still inlines the ws package; build @cline/cli with CLINE_BUNDLE_EXTERNAL=ws"
 cp -R "$CLI_DIR/dist/extensions" "$STAGE_DIR/extensions"
 cp -R "$CLI_DIR/dist/cline-hub" "$STAGE_DIR/cline-hub"
 cp "$SCRIPT_DIR/install-cline-termux.sh" "$STAGE_DIR/install.sh"

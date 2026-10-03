@@ -101,6 +101,13 @@ const result = await Bun.build({
 		"react/jsx-runtime",
 		"react/jsx-dev-runtime",
 		"react-devtools-core",
+		// The Termux build keeps `ws` external: the Android Bun's node:http
+		// client never surfaces the upgrade response, so a bundled `ws` client
+		// cannot reach the Hub, while Bun's own `ws` replacement can.
+		...(process.env.CLINE_BUNDLE_EXTERNAL ?? "")
+			.split(",")
+			.map((name) => name.trim())
+			.filter(Boolean),
 	],
 	define: {
 		"process.env.NODE_ENV": '"production"',

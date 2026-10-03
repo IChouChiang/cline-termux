@@ -1069,8 +1069,10 @@ candidate_release() {
 		env TMPDIR="$candidate_temp" bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli test:unit"
 	run_gate "$log_dir" cli-typecheck \
 		env TMPDIR="$candidate_temp" bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli typecheck"
+	# CLINE_BUNDLE_EXTERNAL=ws: see the ws note in build-termux-release.sh.
 	run_gate "$log_dir" cli-build \
-		env TMPDIR="$candidate_temp" bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli build"
+		env TMPDIR="$candidate_temp" CLINE_BUNDLE_EXTERNAL=ws \
+		bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli build"
 	run_gate "$log_dir" cli-tui \
 		env TMPDIR="$candidate_temp" bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli test:e2e:cli:tui"
 
