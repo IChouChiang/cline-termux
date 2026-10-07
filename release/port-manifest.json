@@ -8,8 +8,8 @@
     "cliVersion": "3.0.68"
   },
   "termux": {
-    "releaseTag": "v3.0.68-termux.1",
-    "revision": 1,
+    "releaseTag": "v3.0.68-termux.2",
+    "revision": 2,
     "platform": "android",
     "architecture": "aarch64",
     "candidateHost": "s25u-lan"
