@@ -210,7 +210,11 @@ if dpkg --compare-versions "${EXPECTED_RELEASE#v}" ge 3.0.68-termux.2; then
 	HUB_PID="$(printf '%s\n' "$HUB_STATUS" | sed -n 's/.*"running":true.*"pid":\([0-9][0-9]*\).*/\1/p')"
 	[ -n "$HUB_PID" ] && [ -r "/proc/$HUB_PID/cmdline" ] \
 		|| fail "cline hub status reported no live Hub process: $HUB_STATUS"
-	HUB_ENTRY="$(tr '\0' '\n' < "/proc/$HUB_PID/cmdline" | sed -n 2p)"
+	# The daemon's argv is `<bun> <entry.js> --cwd ...` on the S25U, but on the
+	# Tab S7+ termux-exec runs it through the linker and the executable path
+	# appears twice (`<bun> <bun> <entry.js> ...`), so take the entry.js
+	# argument wherever it sits instead of a fixed position.
+	HUB_ENTRY="$(tr '\0' '\n' < "/proc/$HUB_PID/cmdline" | grep -m1 '/entry\.js$' || true)"
 	[ "$(realpath "$HUB_ENTRY" 2>/dev/null)" = "$RUNTIME_DIR/entry.js" ] \
 		|| fail "the running Hub (pid $HUB_PID, entry ${HUB_ENTRY:-?}) is not this release's daemon"
 	HUB_STOP="$(acceptance_hub stop)"
