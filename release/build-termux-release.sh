@@ -170,7 +170,7 @@ if [ "$SKIP_BUILD" = false ]; then
 fi
 
 [ -f "$CLI_DIR/dist/index.js" ] || fail "missing $CLI_DIR/dist/index.js"
-[ -d "$CLI_DIR/dist/extensions" ] || fail "missing $CLI_DIR/dist/extensions"
+[ -d "$CLI_DIR/dist/plugin-runtime" ] || fail "missing $CLI_DIR/dist/plugin-runtime"
 [ -d "$CLI_DIR/dist/cline-hub" ] || fail "missing $CLI_DIR/dist/cline-hub"
 
 rm -rf "$STAGE_DIR"
@@ -198,7 +198,10 @@ rg -q 'from "ws"' "$STAGE_DIR/index.js" \
 	|| fail "the bundle does not import ws externally; build @cline/cli with CLINE_BUNDLE_EXTERNAL=ws"
 ! rg -q 'WebSocket was closed before the connection was established' "$STAGE_DIR/index.js" \
 	|| fail "the bundle still inlines the ws package; build @cline/cli with CLINE_BUNDLE_EXTERNAL=ws"
-cp -R "$CLI_DIR/dist/extensions" "$STAGE_DIR/extensions"
+# Plugins run on upstream's self-contained plugin runtime (since cli-v3.0.74).
+# Core finds it by walking up from the bundle, so it must sit beside index.js
+# (sdk/packages/core/src/extensions/plugin/plugin-runtime.ts).
+cp -R "$CLI_DIR/dist/plugin-runtime" "$STAGE_DIR/plugin-runtime"
 cp -R "$CLI_DIR/dist/cline-hub" "$STAGE_DIR/cline-hub"
 cp "$SCRIPT_DIR/install-cline-termux.sh" "$STAGE_DIR/install.sh"
 chmod +x "$STAGE_DIR/install.sh"

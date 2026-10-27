@@ -4,9 +4,7 @@ import {
 	existsSync,
 	mkdirSync,
 	readdirSync,
-	readFileSync,
 	statSync,
-	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,8 +14,8 @@ function defineProcessEnv(name: string): string {
 	return JSON.stringify(process.env[name] ?? "");
 }
 
-function stripGeneratedBunDirective(filePath: string): void {
-	const source = readFileSync(filePath, "utf8");
+async function stripGeneratedBunDirective(filePath: string): Promise<void> {
+	const source = await Bun.file(filePath).text();
 	const stripped = source
 		.replace(/^#![^\n]*\n\/\/ @bun\r?\n/, (match) => {
 			const shebangEnd = match.indexOf("\n") + 1;
@@ -30,7 +28,7 @@ function stripGeneratedBunDirective(filePath: string): void {
 	// Android Bun currently interprets non-ASCII literals in files marked with
 	// `// @bun` as Latin-1 byte code units, which turns TUI glyphs into mojibake.
 	// The runnable bundle does not need this generated marker.
-	writeFileSync(filePath, stripped, "utf8");
+	await Bun.write(filePath, stripped);
 }
 
 const sourcemap = Bun.env.CLINE_SOURCEMAPS === "1" ? "linked" : "none";
@@ -156,13 +154,15 @@ const result = await Bun.build({
 		'import { createRequire as __clineCreateRequire } from "node:module"; const require = __clineCreateRequire(import.meta.url);',
 });
 
+// Right after the build, apart from the copy steps below that upstream keeps
+// changing, so new CLI tags merge without conflicts here.
+await stripGeneratedBunDirective(join(rootDir, "./dist/index.js"));
+
 if (result.logs.length > 0) {
 	for (const log of result.logs) {
 		console.warn(log);
 	}
 }
-
-stripGeneratedBunDirective(join(rootDir, "./dist/index.js"));
 
 const coreBootstrapPath = join(
 	rootDir,
