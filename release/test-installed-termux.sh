@@ -128,12 +128,18 @@ command -v timeout >/dev/null 2>&1 || fail "timeout is required for the TUI PTY 
 mkdir -p "$HOME/tmp"
 LOG_FILE="$(mktemp "$HOME/tmp/cline-termux-tui.XXXXXX")"
 RUNTIME_DIR="$(realpath "$INSTALL_BASE/current")"
-TUI_PROCESS_PATTERN="^$BUN_BASE/current/bun $RUNTIME_DIR/index.js --tui$"
+# The launcher's runtime flags sit between the runtime and index.js (and on the
+# Tab S7+ termux-exec repeats the executable path), so allow any arguments
+# there. The smoke starts its TUI from the real release path, a user's own
+# session runs from `current`, so this never matches theirs.
+TUI_PROCESS_PATTERN="^$BUN_BASE/current/bun( [^ ]+)* $RUNTIME_DIR/index\.js --tui$"
 stop_tui_smoke() {
 	pkill -TERM -f "$TUI_PROCESS_PATTERN" 2>/dev/null || true
 	sleep 1
 	pkill -KILL -f "$TUI_PROCESS_PATTERN" 2>/dev/null || true
 }
+LAUNCH_SCRATCH=""
+LAUNCH_DIR=""
 # The acceptance Hub gets its own data directory and port, so it neither meets
 # nor stops a Hub the user already runs.
 ACCEPTANCE_HUB_PORT=25496
@@ -165,9 +171,51 @@ cleanup() {
 	fi
 	kill_acceptance_hub
 	[ -z "$HUB_HOME" ] || rm -rf "$HUB_HOME"
+	[ -z "$LAUNCH_SCRATCH" ] || rm -rf "$LAUNCH_SCRATCH"
 	rm -f "$LOG_FILE"
 }
 trap cleanup EXIT
+
+# A plain Bun reads bunfig.toml from the folder it starts in, and a `preload`
+# there runs before any Cline code. From 3.0.75-termux.2 the launcher gives
+# Bun its own config instead (run-cline-termux.sh), and Cline hands the same
+# flags to the copies of the runtime it starts. Check that with a harmless
+# preload that only records which process loaded it; the Hub check below
+# starts its daemon from the same folder. This sits before the TUI smoke so
+# that a device with no sign-in, which cannot pass that step, still runs it.
+if dpkg --compare-versions "${EXPECTED_RELEASE#v}" ge 3.0.75-termux.2; then
+	[ -f "$RUNTIME_DIR/cline-termux-runtime.toml" ] \
+		|| fail "missing the launcher's own Bun config: $RUNTIME_DIR/cline-termux-runtime.toml"
+	LAUNCH_SCRATCH="$(mktemp -d "$HOME/tmp/cline-termux-launch.XXXXXX")"
+	LAUNCH_DIR="$LAUNCH_SCRATCH/folder"
+	mkdir -p "$LAUNCH_DIR" "$LAUNCH_SCRATCH/home"
+	printf 'preload = ["./preload.js"]\n' > "$LAUNCH_DIR/bunfig.toml"
+	printf '%s\n' \
+		'require("node:fs").appendFileSync("./preload-ran", process.argv.slice(1, 4).join(" ") + "\n");' \
+		> "$LAUNCH_DIR/preload.js"
+	# Control first: started without the launcher, this runtime loads the
+	# folder's bunfig.toml. If it does not, the checks would pass without
+	# showing anything, so the control has to succeed too.
+	# (The cache path keeps this direct start from filling ~/.bun.)
+	(
+		cd "$LAUNCH_DIR" \
+			&& CLINE_DIR="$LAUNCH_SCRATCH/home" CLINE_NO_AUTO_UPDATE=1 \
+				BUN_RUNTIME_TRANSPILER_CACHE_PATH="$RUNTIME_DIR/.transpiler-cache" \
+				"$BUN_BASE/current/bun" "$RUNTIME_DIR/index.js" --version
+	) > "$LAUNCH_SCRATCH/control.log" 2>&1 || true
+	[ -e "$LAUNCH_DIR/preload-ran" ] || {
+		tail -n 5 "$LAUNCH_SCRATCH/control.log" >&2 || true
+		fail "the bare runtime did not load the launch folder's bunfig.toml, so the checks on the launcher would show nothing"
+	}
+	rm -f "$LAUNCH_DIR/preload-ran"
+	(
+		cd "$LAUNCH_DIR" \
+			&& CLINE_DIR="$LAUNCH_SCRATCH/home" CLINE_NO_AUTO_UPDATE=1 "$LAUNCHER" --version >/dev/null
+	) || fail "cline --version failed when started from a folder with its own bunfig.toml"
+	[ ! -e "$LAUNCH_DIR/preload-ran" ] \
+		|| fail "cline loaded bunfig.toml from its launch folder: $(tr '\n' ';' < "$LAUNCH_DIR/preload-ran")"
+	ok "cline ignores a bunfig.toml in its launch folder (the bare runtime loads it)"
+fi
 
 set +e
 (sleep 7) | timeout 7 script -q -c \
@@ -175,7 +223,30 @@ set +e
 	/dev/null >"$LOG_FILE" 2>&1
 PTY_STATUS=$?
 set -e
+# Whatever still runs this release's TUI when the smoke ends, found by a looser
+# pattern than the one stop_tui_smoke kills by: a command-line shape that ever
+# slips past that one then fails here instead of staying on the device. Only
+# these processes are checked afterwards, so the TUI of a second acceptance
+# run that starts in the meantime does not fail this one.
+TUI_SMOKE_PIDS="$(pgrep -f -- " $RUNTIME_DIR/index\.js --tui$" 2>/dev/null || true)"
 stop_tui_smoke
+tui_smoke_survivor() {
+	local pid
+	for pid in $TUI_SMOKE_PIDS; do
+		if kill -0 "$pid" 2>/dev/null; then
+			printf '%s\n' "$pid"
+			return 0
+		fi
+	done
+	return 1
+}
+for _ in 1 2 3 4 5; do
+	tui_smoke_survivor >/dev/null || break
+	sleep 1
+done
+if TUI_SURVIVOR="$(tui_smoke_survivor)"; then
+	fail "the TUI smoke left a process behind: $(ps -o pid=,args= -p "$TUI_SURVIVOR" 2>/dev/null | head -n 1)"
+fi
 case "$PTY_STATUS" in
 	0|124|137) ;;
 	*) fail "packaged TUI exited unexpectedly with status $PTY_STATUS" ;;
@@ -190,17 +261,19 @@ if rg -a -qi \
 fi
 ok "packaged TUI rendered its input screen in a pseudo-terminal"
 
-# The Hub daemon is spawned as `<runtime> <release>/entry.js`. Releases before
-# 3.0.68-termux.2 shipped no entry.js, so every start failed and the CLI
-# quietly ran in-process. From then on a Hub must start from this exact
-# release and stop again. That check is isolated; the TUI smoke above, like
-# any TUI session, may still leave the user's own auto-started Hub running.
+# The Hub daemon is spawned as `<runtime> [flags] <release>/entry.js`, with
+# its workspace as its folder. Releases before 3.0.68-termux.2 shipped no
+# entry.js, so every start failed and the CLI quietly ran in-process. From
+# then on a Hub must start from this exact release and stop again. That check
+# is isolated; the TUI smoke above, like any TUI session, may still leave the
+# user's own auto-started Hub running. Where the launch-folder check above
+# ran, the daemon starts with that folder as its workspace.
 if dpkg --compare-versions "${EXPECTED_RELEASE#v}" ge 3.0.68-termux.2; then
 	[ -f "$RUNTIME_DIR/entry.js" ] || fail "missing Hub daemon entry: $RUNTIME_DIR/entry.js"
 	HUB_HOME="$(mktemp -d "$HOME/tmp/cline-termux-hub.XXXXXX")"
 	kill_acceptance_hub
 	HUB_STARTED=1
-	HUB_URL="$(acceptance_hub start | tail -n 1)" || {
+	HUB_URL="$(cd "${LAUNCH_DIR:-$PWD}" && acceptance_hub start | tail -n 1)" || {
 		tail -n 20 "$HUB_HOME/data/logs/hub-daemon.log" >&2 || true
 		fail "cline hub start did not bring up a Hub"
 	}
@@ -217,6 +290,16 @@ if dpkg --compare-versions "${EXPECTED_RELEASE#v}" ge 3.0.68-termux.2; then
 	HUB_ENTRY="$(tr '\0' '\n' < "/proc/$HUB_PID/cmdline" | grep -m1 '/entry\.js$' || true)"
 	[ "$(realpath "$HUB_ENTRY" 2>/dev/null)" = "$RUNTIME_DIR/entry.js" ] \
 		|| fail "the running Hub (pid $HUB_PID, entry ${HUB_ENTRY:-?}) is not this release's daemon"
+	if [ -n "$LAUNCH_DIR" ]; then
+		HUB_CONFIG="$(tr '\0' '\n' < "/proc/$HUB_PID/cmdline" | sed -n 's/^--config=//p' | head -n 1)"
+		[ "$(realpath "${HUB_CONFIG:-/nonexistent}" 2>/dev/null)" = "$RUNTIME_DIR/cline-termux-runtime.toml" ] \
+			|| fail "the running Hub (pid $HUB_PID) was not started with this release's Bun config: ${HUB_CONFIG:-<no --config flag>}"
+		tr '\0' '\n' < "/proc/$HUB_PID/cmdline" | grep -Fxq -- '--no-env-file' \
+			|| fail "the running Hub (pid $HUB_PID) was started without --no-env-file"
+		[ ! -e "$LAUNCH_DIR/preload-ran" ] \
+			|| fail "the Hub daemon loaded bunfig.toml from its workspace: $(tr '\n' ';' < "$LAUNCH_DIR/preload-ran")"
+		ok "Hub daemon runs with the launcher's flags and ignores its workspace's bunfig.toml"
+	fi
 	HUB_STOP="$(acceptance_hub stop)"
 	printf '%s\n' "$HUB_STOP" | rg -q '"stopped":true' \
 		|| fail "cline hub stop did not stop the Hub: $HUB_STOP"

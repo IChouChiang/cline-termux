@@ -5,6 +5,7 @@ import {
 	type ClineDebugRole,
 	isBunEmbeddedModulePath,
 } from "@cline/shared";
+import { inheritedRuntimeFlags } from "./termux-runtime-flags";
 
 export interface ResolveCliLaunchSpecOptions {
 	execPath?: string;
@@ -54,7 +55,13 @@ export function resolveCliLaunchSpec(
 			arg.startsWith("--conditions="),
 		);
 		const command = augmentNodeCommandForDebug(
-			[execPath, ...(conditionsArg ? [conditionsArg] : []), resolvedEntry],
+			[
+				execPath,
+				// Termux port: see inheritedRuntimeFlags.
+				...inheritedRuntimeFlags(execArgv),
+				...(conditionsArg ? [conditionsArg] : []),
+				resolvedEntry,
+			],
 			{ env, execArgv, debugRole },
 		);
 		return {

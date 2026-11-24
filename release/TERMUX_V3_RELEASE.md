@@ -76,6 +76,42 @@ is deliberately not in the merge-conflict allowlist: an upstream edit that
 merges cleanly keeps the Android branch, and one that conflicts with it blocks
 inspection so the branch is folded in by hand.
 
+From `3.0.75-termux.2` the launcher starts Bun with
+`--config=<release tree>/cline-termux-runtime.toml --no-env-file`
+(`release/run-cline-termux.sh`). A plain Bun otherwise reads `bunfig.toml`,
+and on most builds `.env`, from the folder it starts in, and a `preload` entry
+there runs inside Cline before any Cline code. Upstream switched that off for
+its compiled binaries at compile time (cline/cline#15781); the port runs the
+JS bundle, so it needs the flags. The config file is empty and is deliberately
+not named `bunfig.toml`. Bun stops with an error when the file is missing, so
+the launcher and the file ship together and `build-termux-release.sh` checks
+both.
+
+A flag covers only the process it is passed to, and Cline starts further
+copies of the runtime with the workspace as their folder. The bundle passes
+its own flags on to each of them: the Hub daemon and the plugin sandbox
+(`apps/cli/src/utils/termux-runtime-launchers.ts`, called from
+`apps/cli/src/index.ts`), connectors started by the CLI or the Hub
+(`apps/cli/src/utils/internal-launch.ts`), and connectors started from the
+dashboard (`apps/cline-hub/src/server/connectors.ts`, which on a plain Bun
+would otherwise run `bun connect ...`, not the CLI). Those three upstream
+files carry a few port lines each and, like `shell.ts`, are not in the
+merge-conflict allowlist. The sandbox test and the device acceptance start
+`cline` and an isolated Hub from a folder that holds a harmless `bunfig.toml`
+preload. They first require that the bare runtime does load it, because the
+check would show nothing otherwise, then that neither process did and that
+the daemon's command line carries both flags. The device runtime does not
+read `.env` at all, so for `--no-env-file` only the flag itself is checked
+there. The plugin sandbox and the connector commands are covered by unit
+tests, not on the device. For the sandbox and the Hub daemon the flags travel
+through two settings in core, which only work while the bundle holds a single
+copy of the modules that keep them; `build-termux-release.sh` checks that.
+
+A Hub daemon that an earlier release started keeps running without the flags
+until it is restarted (`cline hub stop`, then `cline hub start`). The Hub
+build id does not change with a port-only revision, so the new client reuses
+that daemon.
+
 ## Managed Flow
 
 Inspect exactly the next stable CLI release:
@@ -102,14 +138,17 @@ The candidate command:
 4. resolves only allowlisted metadata conflicts
 5. installs with upstream's exact Bun version
 6. tests the release-manager download safeguards
-7. runs SDK build, CLI unit tests, typecheck, CLI build, and official TUI tests
+7. runs SDK build, CLI unit tests, typecheck, the dashboard package's unit
+   tests, CLI build, and official TUI tests
 8. creates a deterministic Android ARM64 archive
 9. tests the unpublished archive in a Termux sandbox on the S25 Ultra,
-   including a Hub daemon start, status and stop on an isolated port
+   including a Hub daemon start, status and stop on an isolated port and the
+   launch-folder check
 10. pushes the final tag and creates a public GitHub prerelease
 11. installs that exact release URL on the S25 Ultra
 12. runs version, help, FFI `dlopen`, a bounded-retry visible-frame TUI
-    check and, from `3.0.68-termux.2`, the same isolated Hub start/stop check
+    check and, from `3.0.68-termux.2`, the same isolated Hub start/stop check;
+    from `3.0.75-termux.2` also the launch-folder check described above
 
 The official TUI suite creates many isolated Cline homes without removing them.
 The manager points `TMPDIR` at a disposable run directory under

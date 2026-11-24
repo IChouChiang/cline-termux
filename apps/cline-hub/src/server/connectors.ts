@@ -7,6 +7,7 @@ import {
 	buildConnectorConnectArgs,
 	CONNECTOR_PLATFORMS,
 	listConnectorCatalog,
+	readConnectorCliLaunchSpec,
 	setConnectorCliLaunchSpec,
 	withResolvedClineBuildEnv,
 } from "@cline/shared";
@@ -68,6 +69,20 @@ function buildCliConnectCommand(
 	const isNodeRuntime = runtimeName === "node" || runtimeName === "node.exe";
 	const useBunSourceEntrypoint =
 		(isBunRuntime || isNodeRuntime) && exists(cliPath);
+	// Termux port: there the CLI is a JS bundle on a plain Bun, which is neither
+	// shape below, and `bun connect ...` would make Bun look for something
+	// called "connect" in the workspace. The CLI that hosts this server has
+	// already recorded how to start itself, runtime flags included
+	// (apps/cli/src/index.ts), so that command is reused.
+	if (isBunRuntime && !useBunSourceEntrypoint) {
+		const hostSpec = readConnectorCliLaunchSpec();
+		if (hostSpec) {
+			return {
+				launcher: hostSpec.launcher,
+				childArgs: [...hostSpec.connectArgsPrefix, ...args],
+			};
+		}
+	}
 	const launcher = isBunRuntime
 		? execPath
 		: useBunSourceEntrypoint

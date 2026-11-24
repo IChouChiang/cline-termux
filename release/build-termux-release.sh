@@ -188,6 +188,41 @@ chmod +x "$STAGE_DIR/index.js"
 rg -q 'new URL\(`\./entry\.\$\{' "$STAGE_DIR/index.js" \
 	|| fail "the bundled Hub daemon no longer resolves ./entry.js beside index.js; revisit the entry shim"
 printf '%s\n' 'import "./index.js";' > "$STAGE_DIR/entry.js"
+# A plain Bun reads bunfig.toml from the folder it starts in, and a `preload`
+# there would run inside Cline. The launcher therefore starts Bun with this
+# file as its config (release/run-cline-termux.sh), and the bundle passes the
+# same flags to the copies of the runtime it starts
+# (apps/cli/src/utils/termux-runtime-flags.ts). The file is deliberately not
+# named bunfig.toml: Bun would then also pick it up by itself whenever the
+# release tree is the current folder. Bun stops with an error when the file is
+# missing, so the launcher and this file must ship together.
+RUNTIME_CONFIG_NAME="cline-termux-runtime.toml"
+rg -q -F -- "--config=\"\$runtime_home/$RUNTIME_CONFIG_NAME\"" "$SCRIPT_DIR/run-cline-termux.sh" \
+	|| fail "run-cline-termux.sh no longer starts Bun with $RUNTIME_CONFIG_NAME; keep the launcher and the packaged config in step"
+rg -q -F -- '--no-env-file' "$SCRIPT_DIR/run-cline-termux.sh" \
+	|| fail "run-cline-termux.sh no longer starts Bun with --no-env-file"
+rg -q -F -- '"--no-env-file"' "$STAGE_DIR/index.js" \
+	|| fail "the bundle no longer hands the launcher's runtime flags to the processes it starts; see apps/cli/src/utils/termux-runtime-flags.ts"
+# For the Hub daemon and the plugin sandbox the flags travel through two
+# settings in core that the bundle fills in once at startup
+# (apps/cli/src/utils/termux-runtime-launchers.ts). A setting only reaches the
+# code that starts the process while the bundle holds a single copy of its
+# module, and no device check covers the plugin sandbox. Each message below
+# sits in the module that keeps one of the two settings.
+for LAUNCHER_MODULE_MARKER in \
+	'unable to resolve runtime executable for hub daemon' \
+	'does not contain a complete plugin runtime'; do
+	LAUNCHER_MODULE_COPIES="$(rg -o -F -- "$LAUNCHER_MODULE_MARKER" "$STAGE_DIR/index.js" | wc -l || true)"
+	[ "$LAUNCHER_MODULE_COPIES" -eq 1 ] \
+		|| fail "the bundle has $LAUNCHER_MODULE_COPIES copies of \"$LAUNCHER_MODULE_MARKER\", expected 1: with more than one, the launcher's runtime flags may not reach the Hub daemon or the plugin sandbox; with none, upstream reworded the message and this check needs the new text"
+done
+printf '%s\n' \
+	'# Bun configuration for the Cline Termux runtime. Intentionally empty.' \
+	'# run-cline-termux.sh passes this file to Bun with --config, so that a' \
+	'# bunfig.toml in the folder cline starts in is not read.' \
+	> "$STAGE_DIR/$RUNTIME_CONFIG_NAME"
+[ -s "$STAGE_DIR/$RUNTIME_CONFIG_NAME" ] \
+	|| fail "could not write $RUNTIME_CONFIG_NAME into the release tree"
 # The Hub speaks `ws` over node:http. The Android Bun's node:http client never
 # surfaces the upgrade response, so a bundled `ws` client times out on every
 # Hub handshake (hub start fails after 15 s; auto mode silently stays
@@ -202,6 +237,10 @@ rg -q 'from "ws"' "$STAGE_DIR/index.js" \
 # Core finds it by walking up from the bundle, so it must sit beside index.js
 # (sdk/packages/core/src/extensions/plugin/plugin-runtime.ts).
 cp -R "$CLI_DIR/dist/plugin-runtime" "$STAGE_DIR/plugin-runtime"
+# The plugin sandbox only gets the launcher's runtime flags when it starts from
+# this file; core's other bootstrap forms are for source checkouts.
+[ -f "$STAGE_DIR/plugin-runtime/plugin-sandbox-bootstrap.js" ] \
+	|| fail "the packaged plugin runtime has no plugin-sandbox-bootstrap.js"
 cp -R "$CLI_DIR/dist/cline-hub" "$STAGE_DIR/cline-hub"
 cp "$SCRIPT_DIR/install-cline-termux.sh" "$STAGE_DIR/install.sh"
 chmod +x "$STAGE_DIR/install.sh"

@@ -22,6 +22,7 @@ import {
 import { registerClineClientIdentity } from "./utils/cline-client-identity";
 import { resolveCliLaunchSpec } from "./utils/internal-launch";
 import { writeErr } from "./utils/output";
+import { applyInheritedRuntimeFlags } from "./utils/termux-runtime-launchers";
 
 // Initialize VCR before any HTTP requests are made.
 // Set CLINE_VCR=record|playback and CLINE_VCR_CASSETTE=<path> to enable.
@@ -32,6 +33,9 @@ disableCurrentDirectoryExecutableSearch();
 
 // Before any personality probes the local hub over 127.0.0.1.
 ensureLoopbackProxyBypass();
+
+// Termux port: before any personality starts another copy of this runtime.
+applyInheritedRuntimeFlags();
 
 if (Bun.isStandaloneExecutable) {
 	setPluginSandboxLauncher({

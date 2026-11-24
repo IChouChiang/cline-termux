@@ -96,6 +96,13 @@ deleted:
 rm -rf ~/.bun/install/cache/@t@
 ```
 
+From v3.0.75-termux.2, `cline` does not read a `bunfig.toml` or `.env` from
+the folder it is started in. A plain Bun would, and a `preload` entry in such
+a file runs before Cline itself. The launcher gives Bun its own empty config
+instead, and Cline starts its Hub and helper processes the same way. A Hub
+that an earlier release started keeps running as it was: run `cline hub stop`
+once after updating, and the next start is covered too.
+
 ## Why Bun FFI Is Included
 
 Cline CLI v3 uses OpenTUI. OpenTUI loads its native renderer through

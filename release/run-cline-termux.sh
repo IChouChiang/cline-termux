@@ -16,4 +16,20 @@ if [ -z "${BUN_RUNTIME_TRANSPILER_CACHE_PATH:-}" ]; then
 	mkdir -p "$BUN_RUNTIME_TRANSPILER_CACHE_PATH" 2>/dev/null || true
 fi
 
-exec "$CLINE_TERMUX_BUN" "$CLINE_TERMUX_HOME/index.js" "$@"
+# A plain Bun reads bunfig.toml, and on most builds .env, from the folder it
+# starts in, and a `preload` entry there would run inside Cline before any
+# Cline code. Upstream switched that off for its compiled binaries
+# (cline/cline#15781); this port runs the JS bundle, so it gets the same
+# protection from two flags: its own, empty config file in place of the
+# folder's bunfig.toml, and no .env loading. The config path is the real path
+# of this release tree, not the path through `current`, so that the copies of
+# the runtime that Cline starts with these flags (the Hub daemon, the plugin
+# sandbox, connectors; apps/cli/src/utils/termux-runtime-flags.ts) keep a
+# valid path for as long as their own tree exists. A missing file stops Bun
+# with an error instead of running unprotected.
+runtime_home="$(cd -P -- "$CLINE_TERMUX_HOME" >/dev/null && pwd -P)"
+
+exec "$CLINE_TERMUX_BUN" \
+	--config="$runtime_home/cline-termux-runtime.toml" \
+	--no-env-file \
+	"$CLINE_TERMUX_HOME/index.js" "$@"

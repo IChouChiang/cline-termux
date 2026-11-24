@@ -198,11 +198,50 @@ fi
 "$WORK_DIR/bin/cline" --help >/dev/null
 ok "Install smoke passed: cline --version -> $INSTALLED_VERSION"
 
-# The Hub daemon is launched as `<runtime> <release>/entry.js`. Prove it starts
-# here, before anything is published, not only after the release tag exists.
+# A plain Bun reads bunfig.toml from the folder it starts in, and a `preload`
+# there runs before any Cline code. The launcher passes Bun its own config
+# instead (release/run-cline-termux.sh), and Cline hands the same flags to the
+# copies of the runtime it starts. Prove both on this device with a harmless
+# preload that only records which process loaded it.
+[ -f "$WORK_DIR/opt/cline-termux/current/cline-termux-runtime.toml" ] \
+	|| fail "the launcher's own Bun config is missing from install"
+LAUNCH_DIR="$WORK_DIR/launch-folder"
+mkdir -p "$LAUNCH_DIR"
+printf 'preload = ["./preload.js"]\n' > "$LAUNCH_DIR/bunfig.toml"
+printf '%s\n' \
+	'require("node:fs").appendFileSync("./preload-ran", process.argv.slice(1, 4).join(" ") + "\n");' \
+	> "$LAUNCH_DIR/preload.js"
+# Control first: started without the launcher, this runtime loads the folder's
+# bunfig.toml. If it does not, the checks below would pass without showing
+# anything, so the control has to succeed too.
+# (The cache path keeps this direct start from filling ~/.bun.)
+(
+	cd "$LAUNCH_DIR" \
+		&& CLINE_DIR="$WORK_DIR/launch-home" CLINE_NO_AUTO_UPDATE=1 \
+			BUN_RUNTIME_TRANSPILER_CACHE_PATH="$WORK_DIR/opt/cline-termux/current/.transpiler-cache" \
+			"$WORK_DIR/opt/bun-android-ffi/current/bun" \
+			"$WORK_DIR/opt/cline-termux/current/index.js" --version
+) > "$WORK_DIR/launch-control.log" 2>&1 || true
+[ -e "$LAUNCH_DIR/preload-ran" ] || {
+	tail -n 5 "$WORK_DIR/launch-control.log" >&2 || true
+	fail "the bare runtime did not load the launch folder's bunfig.toml, so the checks on the launcher would show nothing"
+}
+rm -f "$LAUNCH_DIR/preload-ran"
+(
+	cd "$LAUNCH_DIR" \
+		&& CLINE_DIR="$WORK_DIR/launch-home" "$WORK_DIR/bin/cline" --version >/dev/null
+) || fail "cline --version failed when started from a folder with its own bunfig.toml"
+[ ! -e "$LAUNCH_DIR/preload-ran" ] \
+	|| fail "cline loaded bunfig.toml from its launch folder: $(tr '\n' ';' < "$LAUNCH_DIR/preload-ran")"
+ok "cline ignores a bunfig.toml in its launch folder (the bare runtime loads it)"
+
+# The Hub daemon is launched as `<runtime> <flags> <release>/entry.js`, with
+# the workspace as its folder. Prove it starts here, before anything is
+# published, not only after the release tag exists, and start it from the
+# launch folder above so that the same check covers the daemon.
 kill_sandbox_hub
 SANDBOX_HUB_STARTED=1
-HUB_URL="$(sandbox_hub start | tail -n 1)" || {
+HUB_URL="$(cd "$LAUNCH_DIR" && sandbox_hub start | tail -n 1)" || {
 	tail -n 20 "$WORK_DIR/hub-home/data/logs/hub-daemon.log" >&2 || true
 	fail "cline hub start did not bring up a sandbox Hub"
 }
@@ -212,9 +251,18 @@ HUB_STATUS="$(sandbox_hub status)"
 HUB_PID="$(printf '%s\n' "$HUB_STATUS" | sed -n 's/.*"running":true.*"pid":\([0-9][0-9]*\).*/\1/p')"
 [ -n "$HUB_PID" ] && [ -r "/proc/$HUB_PID/cmdline" ] \
 	|| fail "cline hub status reported no live sandbox Hub: $HUB_STATUS"
-HUB_ENTRY="$(tr '\0' '\n' < "/proc/$HUB_PID/cmdline" | sed -n 2p)"
+# The entry.js argument follows the runtime flags, so take it wherever it sits.
+HUB_ENTRY="$(tr '\0' '\n' < "/proc/$HUB_PID/cmdline" | grep -m1 '/entry\.js$' || true)"
 [ "$(readlink -f "$HUB_ENTRY")" = "$(readlink -f "$WORK_DIR/opt/cline-termux/current/entry.js")" ] \
 	|| fail "the sandbox Hub (pid $HUB_PID) runs ${HUB_ENTRY:-?}, not this release's entry.js"
+HUB_CONFIG="$(tr '\0' '\n' < "/proc/$HUB_PID/cmdline" | sed -n 's/^--config=//p' | head -n 1)"
+[ "$(readlink -f "${HUB_CONFIG:-/nonexistent}")" = "$(readlink -f "$WORK_DIR/opt/cline-termux/current/cline-termux-runtime.toml")" ] \
+	|| fail "the sandbox Hub (pid $HUB_PID) was not started with this release's Bun config: ${HUB_CONFIG:-<no --config flag>}"
+tr '\0' '\n' < "/proc/$HUB_PID/cmdline" | grep -Fxq -- '--no-env-file' \
+	|| fail "the sandbox Hub (pid $HUB_PID) was started without --no-env-file"
+[ ! -e "$LAUNCH_DIR/preload-ran" ] \
+	|| fail "the Hub daemon loaded bunfig.toml from its workspace: $(tr '\n' ';' < "$LAUNCH_DIR/preload-ran")"
+ok "The Hub daemon runs with the launcher's flags and ignores its workspace's bunfig.toml"
 HUB_STOP="$(sandbox_hub stop)"
 printf '%s\n' "$HUB_STOP" | rg -q '"stopped":true' \
 	|| fail "cline hub stop did not stop the sandbox Hub: $HUB_STOP"

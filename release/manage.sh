@@ -783,6 +783,7 @@ for path in \
 	"$HOME"/tmp/cline-termux-candidate-* \
 	"$HOME"/tmp/cline-termux-install-test.* \
 	"$HOME"/tmp/cline-termux-hub.* \
+	"$HOME"/tmp/cline-termux-launch.* \
 	"$HOME"/tmp/test-installed-v*.sh \
 	"$HOME"/tmp/test-installed-latest.sh; do
 	if rm -rf "${path:?}"; then
@@ -1080,6 +1081,13 @@ candidate_release() {
 		env TMPDIR="$candidate_temp" bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli test:unit"
 	run_gate "$log_dir" cli-typecheck \
 		env TMPDIR="$candidate_temp" bash -lc "cd '$worktree' && '$bun_bin' -F @cline/cli typecheck"
+	# The dashboard server is bundled into the CLI and carries a port line
+	# (apps/cline-hub/src/server/connectors.ts), so its tests gate the build too.
+	# The package's own `test` script calls `bunx`, which `bun run` does not
+	# provide, so it would use whichever Bun the login shell has. Start the same
+	# vitest run with the pinned Bun instead.
+	run_gate "$log_dir" hub-unit \
+		env TMPDIR="$candidate_temp" bash -lc "cd '$worktree/apps/cline-hub' && '$bun_bin' x vitest run --config vitest.config.ts"
 	# CLINE_BUNDLE_EXTERNAL=ws: see the ws note in build-termux-release.sh.
 	run_gate "$log_dir" cli-build \
 		env TMPDIR="$candidate_temp" CLINE_BUNDLE_EXTERNAL=ws \
