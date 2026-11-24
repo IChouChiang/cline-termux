@@ -7,6 +7,7 @@ mod linux_webview;
 #[cfg(target_os = "macos")]
 mod macos_notification;
 mod terminal;
+mod third_party_notices;
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -1413,9 +1414,9 @@ fn setup_application_menu(
     app.set_menu(menu)?;
     set_macos_menu_key_equivalent("View", "Zoom In", "+")?;
     app.on_menu_event(|app, event| {
-        if event.id().as_ref() == CHECK_FOR_UPDATES_MENU_ID {
-            handle_check_for_updates_menu(app);
-        } else if let Some(action) = application_menu_action(event.id().as_ref()) {
+        // Both menu handlers are global listeners, so the tray handler receives
+        // application menu events too and handles Check for Updates once.
+        if let Some(action) = application_menu_action(event.id().as_ref()) {
             queue_desktop_action(app, action);
         }
     });
@@ -1706,6 +1707,7 @@ fn main() {
             get_desktop_backend_endpoint,
             pick_workspace_directory,
             open_mcp_settings_file,
+            third_party_notices::open_third_party_notices,
             get_update_status,
             restart_to_apply_update,
             check_for_update_now,

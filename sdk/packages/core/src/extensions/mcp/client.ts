@@ -9,6 +9,7 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ReadResourceResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import { normalizeMcpToolAnnotations } from "./annotations";
 import { createMcpAppsClientCapabilities } from "./apps";
 import {
 	createMcpOAuthClientInformation,
@@ -26,6 +27,13 @@ import type {
 	McpToolCallResult,
 	McpToolDescriptor,
 } from "./types";
+
+function withAnnotations(
+	value: unknown,
+): Pick<McpToolDescriptor, "annotations"> {
+	const annotations = normalizeMcpToolAnnotations(value);
+	return annotations ? { annotations } : {};
+}
 
 type JsonRpcRequest = {
 	jsonrpc: "2.0";
@@ -367,6 +375,7 @@ class StdioMcpClient implements McpServerClient {
 				name?: string;
 				description?: string;
 				inputSchema?: Record<string, unknown>;
+				annotations?: unknown;
 				_meta?: Record<string, unknown>;
 			}>;
 		};
@@ -378,6 +387,7 @@ class StdioMcpClient implements McpServerClient {
 					name: string;
 					description?: string;
 					inputSchema: Record<string, unknown>;
+					annotations?: unknown;
 					_meta?: Record<string, unknown>;
 				} =>
 					typeof tool?.name === "string" &&
@@ -388,6 +398,7 @@ class StdioMcpClient implements McpServerClient {
 				name: tool.name,
 				description: tool.description,
 				inputSchema: tool.inputSchema,
+				...withAnnotations(tool.annotations),
 				...(tool._meta &&
 				typeof tool._meta === "object" &&
 				!Array.isArray(tool._meta)
@@ -739,6 +750,7 @@ export interface DefaultMcpServerClientFactoryOptions {
 
 export interface ProbeMcpServerConnectionOptions
 	extends Omit<DefaultMcpServerClientFactoryOptions, "settingsPath"> {
+	/** Exact stored settings key, including whitespace or an empty string. */
 	serverName: string;
 	filePath?: string;
 }
@@ -752,6 +764,7 @@ export interface ProbeMcpServerConnectionResult {
 
 class SdkUrlMcpClient implements McpServerClient {
 	private client?: Client;
+	private connectionAbortController?: AbortController;
 	private authContext?: McpOAuthProviderContext;
 	private readonly requestTimeoutMs: number;
 	private readonly connectAttemptTimeoutMs: number;
@@ -800,6 +813,27 @@ class SdkUrlMcpClient implements McpServerClient {
 		const oauthProvider = (await authContext.provider.tokens())
 			? authContext.provider
 			: undefined;
+		const connection = new AbortController();
+		this.connectionAbortController = connection;
+		// SDK OAuth retries can outlive transport.close(). Bind discovery, token
+		// refresh and transport requests to the connection's entire lifetime.
+		const connectionFetch: FetchLike = async (input, init) => {
+			connection.signal.throwIfAborted();
+			const requestSignal =
+				init?.signal ?? (input instanceof Request ? input.signal : undefined);
+			const response = await (this.options.fetch ?? globalThis.fetch)(input, {
+				...init,
+				signal: requestSignal
+					? AbortSignal.any([connection.signal, requestSignal])
+					: connection.signal,
+			});
+			// A custom fetch may complete after cancellation despite its signal.
+			if (connection.signal.aborted) {
+				await response.body?.cancel().catch(() => {});
+				connection.signal.throwIfAborted();
+			}
+			return response;
+		};
 		let client: Client | undefined;
 		try {
 			client = new Client(
@@ -814,16 +848,34 @@ class SdkUrlMcpClient implements McpServerClient {
 			const transport = createMcpSdkTransport({
 				registration: this.registration,
 				oauthProvider,
-				fetch: this.options.fetch,
+				fetch: connectionFetch,
 				restrictConfiguredHeadersToOrigin:
 					this.options.restrictConfiguredHeadersToOrigin,
 			});
-			await client.connect(transport, {
+			const connecting = client.connect(transport, {
 				timeout: this.connectAttemptTimeoutMs,
 			});
+			// The SDK's request timeout starts after transport.start(). SSE startup
+			// can wait forever for an endpoint, so bound the whole connection too.
+			// The catch path closes the in-flight client/transport on expiry.
+			if (!(await settlesWithin(connecting, this.connectAttemptTimeoutMs))) {
+				throw new Error(
+					formatMcpTimeoutErrorMessage(
+						this.registration.name,
+						this.connectAttemptTimeoutMs,
+						"connect",
+					),
+				);
+			}
+			await connecting;
+			connection.signal.throwIfAborted();
 			await authContext.clearError();
+			connection.signal.throwIfAborted();
 			this.client = client;
 		} catch (error) {
+			connection.abort();
+			if (this.connectionAbortController === connection)
+				this.connectionAbortController = undefined;
 			await client?.close().catch(() => {});
 			const effectiveError = augmentMcpTimeoutError(
 				error,
@@ -844,6 +896,8 @@ class SdkUrlMcpClient implements McpServerClient {
 	}
 
 	async disconnect(): Promise<void> {
+		this.connectionAbortController?.abort();
+		this.connectionAbortController = undefined;
 		const activeClient = this.client;
 		this.client = undefined;
 		await activeClient?.close();
@@ -864,6 +918,7 @@ class SdkUrlMcpClient implements McpServerClient {
 					!Array.isArray(tool.inputSchema)
 						? tool.inputSchema
 						: {},
+				...withAnnotations(tool.annotations),
 				...(tool._meta ? { _meta: tool._meta } : {}),
 			}));
 		} catch (error) {
@@ -991,10 +1046,7 @@ export function createDefaultMcpServerClientFactory(
 export async function probeMcpServerConnection(
 	options: ProbeMcpServerConnectionOptions,
 ): Promise<ProbeMcpServerConnectionResult> {
-	const serverName = options.serverName.trim();
-	if (!serverName) {
-		throw new Error("MCP server name cannot be empty.");
-	}
+	const serverName = options.serverName;
 	const { getMcpServerOAuthStatus, resolveMcpServerRegistration } =
 		await import("./config-loader");
 	const registration = resolveMcpServerRegistration(serverName, {
